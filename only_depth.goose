@@ -2,6 +2,7 @@
 namespace only_depth;
 import std;
 import dictionary;
+import alignment;
 import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
 import seqair.bam;
 import seqair.bam_index;
@@ -37,7 +38,7 @@ struct Group { name: i64, len: i64, next: i64 }
 struct Block { group: i64, begin: i64, end: i64, ordinal: i64, no_stop: bool }
 root struct Counter {
     delta: i64[>..] = [],
-    chunks: bam_index::Chunk[>..] = [], blocks: Block[>..] = [],
+    blocks: Block[>..] = [],
     names: u8[>..] = [], groups: Group[>..] = [], ids: dictionary<u64, i64> = dictionary<u64, i64> {},
 }
 
@@ -66,37 +67,30 @@ fn add_block(counter: Counter&, changed: bitvec::BitVec&, begin: i64, end: i64, 
     else { counter.blocks.push(Block { group: group, begin: a, end: b, ordinal: counter.blocks.len, no_stop: end >= stop }); }
 }
 
-fn load(counter: Counter&, changed: bitvec::BitVec&, reader: bam::Reader&, index: const bam_index::Index&, tid: i32, start: i64, stop: i64,
+fn load(counter: Counter&, changed: bitvec::BitVec&, reader: alignment::Reader&, tid: i32, start: i64, stop: i64,
         include: u16, exclude: u16, mapq: u8, mate_fix: bool, fast: bool) -> bam::Status {
     // Reuse zeroed storage, clearing only endpoints touched by the last fetch.
     // Clear before resizing: the preceding region may have been longer.
     changed.ones() { pos => counter.delta[pos] = 0; };
     counter.delta.resize(stop - start, 0); changed.reset(stop - start);
     counter.blocks.clear(); counter.names.clear(); counter.groups.clear(); counter.ids.clear();
-    let query = index.query(tid, start, stop, counter.chunks);
+    let query = reader.fetch(tid, start, stop);
     if query != bam::Status.Record { return query; }
-    var last_tid: i32 = -1; var last_pos: i64 = -1;
-    for chunk in counter.chunks {
-        let seek = reader.seek(chunk.begin); if seek != bam::Status.Record { return bam::Status.Truncated; }
-        while reader.tell() < chunk.end {
-            let status = reader.read(); if status != bam::Status.Record { return if status == bam::Status.End { bam::Status.Truncated } else { status }; }
-            let record = reader.record(); let f = record.fields;
-            if f.tid < 0 || f.pos < 0 { continue; }
-            if f.tid < last_tid || (f.tid == last_tid && f.pos < last_pos) { return bam::Status.Unsorted; }
-            last_tid = f.tid; last_pos = f.pos;
-            if f.tid > tid || (f.tid == tid && f.pos >= stop) { break; }
-            if f.tid != tid || f.end <= start || f.flags & include != include || f.flags & exclude != 0 || f.mapq < mapq { continue; }
-            // HTSlib gives zero-reference-span alignments a one-base fetch span.
-            if fast { counter.add_block(changed, f.pos, f.end, start, stop, -1); continue; }
-            let eligible = mate_fix && f.flags & 1 != 0 && f.tid == f.mate_tid &&
-                (abs(f.template_len as i64) / 2 < f.end - f.pos || abs(f.mate_pos - f.pos) < f.end - f.pos);
-            let id = if eligible { counter.group(record.name()) } else { -1 };
-            var pos = f.pos;
-            for i in f.cigar_len {
-                let word = record.cigar(i); let op = word & 15; let n = (word >> 4) as i64;
-                if op == 0 || op == 2 || op == 7 || op == 8 { counter.add_block(changed, pos, pos + n, start, stop, id); pos += n; }
-                else if op == 3 { pos += n; }
-            }
+    loop {
+        let status = reader.read(); if status == bam::Status.End { break; }
+        if status != bam::Status.Record { return status; }
+        let record = reader.record(); let f = record.fields;
+        if f.flags & include != include || f.flags & exclude != 0 || f.mapq < mapq { continue; }
+        // HTSlib gives zero-reference-span alignments a one-base fetch span.
+        if fast { counter.add_block(changed, f.pos, f.end, start, stop, -1); continue; }
+        let eligible = mate_fix && f.flags & 1 != 0 && f.tid == f.mate_tid &&
+            (abs(f.template_len as i64) / 2 < f.end - f.pos || abs(f.mate_pos - f.pos) < f.end - f.pos);
+        let id = if eligible { counter.group(record.name()) } else { -1 };
+        var pos = f.pos;
+        for i in f.cigar_len {
+            let word = record.cigar(i); let op = word & 15; let n = (word >> 4) as i64;
+            if op == 0 || op == 2 || op == 7 || op == 8 { counter.add_block(changed, pos, pos + n, start, stop, id); pos += n; }
+            else if op == 3 { pos += n; }
         }
     }
     sort(counter.blocks) { a, b => a.group < b.group || (a.group == b.group &&

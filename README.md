@@ -1,7 +1,8 @@
 # goose-perbase
 
 An experimental Goose port of [Perbase](https://github.com/sstadick/perbase),
-implementing **`base-depth` and `only-depth`: indexed BAM → plain or BGZF TSV**. Base-depth uses
+implementing **`base-depth`, `only-depth`, and `merge-adjacent`**. Depth commands
+convert indexed BAM to plain or BGZF TSV; merge-adjacent streams TSV intervals. Base-depth uses
 [goose-seqair](https://github.com/sstadick/goose-seqair)'s indexed region slabs
 and raw column iterator, rather than an HTSlib pileup wrapper. The application
 and aggregation are Goose; BGZF decompression and base unpacking use the native
@@ -50,8 +51,8 @@ be discarded.
 The compatibility target is **Perbase v1.4.1**, revision
 [`213e774`](https://github.com/sstadick/perbase/commit/213e77439b2c216662528c5eebfff2d18492d025).
 All its `base-depth` processing option names are accepted within the indexed
-BAM input scope. Subcommands other than these two, SAM/CRAM/stdin input, and compressed
-FASTA are not implemented.
+BAM input scope. SAM/CRAM/stdin alignment input and compressed reference FASTA
+are not implemented. `merge-adjacent` accepts stdin text.
 
 | Options | Behavior/defaults |
 | --- | --- |
@@ -151,6 +152,27 @@ the default permits all workers. A job can produce substantially more output,
 especially with `-n`, so this differs from Rust's row-channel buffering.
 Reduce `-c` to bound per-region counters and output. Restricted regions can
 span a superchunk (`chunksize × workers`).
+
+## Merge-adjacent
+
+`build/goose-perbase only-depth reads.bam | build/goose-perbase merge-adjacent`
+merges equal-depth runs across fetch boundaries. Input must already be sorted;
+the command does not sort. It accepts a file, `-`, or omitted input for stdin.
+Named `.gz`, `.gzip`, and `.bgzf` files use BGZF decoding, matching Perbase.
+
+Header names are `REF`/`chrom`, `POS`/`chromStart`, optional `END`/`chromEnd`,
+and `DEPTH`/`COV`, in any order; extra columns are ignored. Without END, each
+position spans one base. `-n`/`--no-header` requires four ordered columns
+`REF POS END DEPTH`; an empty END means POS + 1. TSV quoting supports tabs,
+escaped quotes and multiline fields. Output has `REF POS END DEPTH` headers
+unless input contains no data. Coordinates are preserved without conversion.
+
+Touching or overlapping intervals merge only when reference and depth match.
+Like upstream, a merged interval takes the latest end rather than the maximum;
+nested intervals can therefore shorten it. `-o`, `-Z`, `-T`, and `-L` use the
+shared output writer. Compression defaults to the available CPU count and
+level 2. Plain processing is single-threaded and streaming, with memory bounded
+by the largest record plus output buffers; BGZF output uses compression workers.
 
 ## Parallel execution and memory
 

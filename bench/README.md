@@ -1,5 +1,30 @@
 # Perbase benchmarks
 
+## Merge-adjacent: Perbase v1.4.1
+
+Input is the 551,523,443-byte TSV from the full-chr20 only-depth run below.
+Three measured runs after a warmup, alternating executable order, with the
+same eight-core affinity and native build flags. Both write plain files under
+`/srv`; every result matches by SHA-256. Output is 551,442,433 bytes.
+
+| [Report](results/merge-chr20.json) | Goose | Rust |
+| --- | ---: | ---: |
+| Median wall seconds | 4.501 | 4.916 |
+| Peak RSS MiB | 2.75 | 4.00 |
+
+Goose is **1.09× faster** on this workload, a modest margin. Both merge passes
+are single-threaded; the low RSS confirms this run does not buffer the whole
+input or output. This measures already run-length-encoded data, not every-base
+TSV or compressed-input/output throughput.
+
+```sh
+build/goose-perbase only-depth /srv/goose-perbase/paper-chr20-full.bam -t 8 \
+  -o /srv/goose-perbase/paper-chr20-depth.tsv
+TMPDIR=/srv/goose-perbase python3 bench/run.py /srv/goose-perbase/paper-chr20-depth.tsv \
+  --command merge-adjacent --perbase /srv/goose-perbase/rust-current-target/release/perbase \
+  --cpus 0,1,2,3,4,5,6,7 --rounds 3 --output /srv/goose-perbase/merge-chr20.json
+```
+
 ## Only-depth: Perbase v1.4.1
 
 Clang native flags, Rust v1.4.1 build and eight-core affinity are as documented

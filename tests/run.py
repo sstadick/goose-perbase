@@ -1,6 +1,8 @@
 """CLI differential tests against Rust Perbase and an independent CIGAR oracle."""
 import argparse
+import csv
 import gzip
+import io
 import os
 from pathlib import Path
 import random
@@ -66,6 +68,56 @@ def expected(header, records, include=0, exclude=0, mapq=0, baseq=0, zeros=False
     return ("\t".join(HEADER) + "\n" + "".join("\t".join(row) + "\n" for row in lines)).encode() if lines else b""
 
 
+def merge_tests(args, directory):
+    def run(exe, data, *flags, ok=True):
+        result = subprocess.run([str(exe.resolve()), "merge-adjacent", *map(str, flags)],
+                                input=data, capture_output=True, timeout=60)
+        assert (result.returncode == 0) == ok, (exe, flags, result.stderr)
+        return result.stdout
+
+    header = b"REF\tPOS\tEND\tDEPTH\n"
+    cases = [
+        (header + b"a\t0\t2\t3\na\t2\t4\t3\na\t5\t7\t3\na\t7\t8\t4\nb\t0\t1\t4\n",
+         [], header + b"a\t0\t4\t3\na\t5\t7\t3\na\t7\t8\t4\nb\t0\t1\t4\n"),
+        (b"a\t0\t10\t2\na\t1\t3\t2\na\t4\t6\t2", ["-n"], header + b"a\t0\t3\t2\na\t4\t6\t2\n"),
+        (b"COV\tchrom\tchromStart\r\n2\ta\t0\r\n2\ta\t1\r\n", [], header + b"a\t0\t2\t2\n"),
+        (b"a\t0\t\t18446744073709551615\textra\n", ["-n"], header + b"a\t0\t1\t18446744073709551615\n"),
+        (b"\xef\xbb\xbf" + header + b'"a\t""b\nc"\t0\t1\t2\n', [], header + b'"a\t""b\nc"\t0\t1\t2\n'),
+        (b"", [], b""), (header, [], b""), (b"\n\r\n", ["-n"], b""),
+    ]
+    text = io.StringIO(newline=""); writer = csv.writer(text, delimiter="\t", lineterminator="\n")
+    writer.writerow(["REF", "POS", "END", "DEPTH"])
+    # Cross input/output buffer boundaries, including a quoted field over 64 KiB.
+    name = 'a"' + "b" * 65536 + "\nc"
+    writer.writerow([name, 0, 1, 2]); writer.writerow([name, 1, 2, 2])
+    for pos in range(10000): writer.writerow(["z", pos, pos + 1, pos // 7 % 3])
+    oracle = io.StringIO(newline=""); writer = csv.writer(oracle, delimiter="\t", lineterminator="\n")
+    writer.writerow(["REF", "POS", "END", "DEPTH"]); writer.writerow([name, 0, 2, 2])
+    for pos in range(0, 10000, 7): writer.writerow(["z", pos, min(pos + 7, 10000), pos // 7 % 3])
+    cases.append((text.getvalue().encode(), [], oracle.getvalue().encode()))
+    for data, flags, expected in cases:
+        for exe in (args.perbase, args.goose):
+            assert run(exe, data, *flags) == expected, ("merge stdin", flags)
+            assert run(exe, data, "-", *flags) == expected, ("merge explicit stdin", flags)
+        path = directory / "merge.tsv"; path.write_bytes(data)
+        assert run(args.goose, b"", path, *flags) == expected
+        zipped = directory / "merge.tsv.gz"
+        with pysam.BGZFile(str(zipped), "wb") as stream: stream.write(data)
+        assert run(args.goose, b"", zipped, *flags) == expected
+        assert run(args.perbase, b"", zipped, *flags) == expected
+        packed = run(args.goose, data, *flags, "-Z", "-T", 2, "-L", 2)
+        assert gzip.decompress(packed) == expected
+    for data, flags in ((b"a\t0\t2\n", ["-n"]), (header + b"a\t-1\t2\t3\n", []),
+                        (header + b"a\t0\t2\t18446744073709551616\n", []),
+                        (header + b"a\t0\t1\n", []), (header + b"\xff\t0\t1\t2\n", [])):
+        for exe in (args.goose, args.perbase): run(exe, data, *flags, ok=False)
+    target = directory / "merged.tsv"
+    assert run(args.goose, cases[0][0], "-o", target) == b""
+    assert target.read_bytes() == cases[0][2]
+    run(args.goose, b"", target, "-o", target, ok=False)
+    if Path("/dev/full").exists(): run(args.goose, cases[0][0], "-o", "/dev/full", ok=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--perbase", type=Path, required=True)
@@ -74,6 +126,7 @@ def main():
     env = dict(os.environ, RUST_LOG="error")
     with tempfile.TemporaryDirectory(prefix="goose-perbase-tests-") as t:
         directory = Path(t); bam = directory / "input.bam"
+        merge_tests(args, directory)
         def run(exe, *flags, ok=True, path=bam, threads=1, command="base-depth"):
             result = subprocess.run([str(exe.resolve()), command, str(path), "-t", str(threads), *map(str, flags)], capture_output=True, env=env, timeout=60)
             assert (result.returncode == 0) == ok, (exe, flags, result.stderr.decode())

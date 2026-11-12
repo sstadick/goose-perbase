@@ -63,14 +63,14 @@ fn number(bytes: const u8[:]) -> i64 {
     for c in bytes { check(c >= '0' && c <= '9' && n <= (4294967295 - (c as i64 - '0')) / 10); n = n * 10 + c - '0'; }
     n
 }
-fn add(intervals: Interval[>..]&, reader: const bam::Reader&, name: const u8[:], begin: i64, end: i64) {
+fn add<R>(intervals: Interval[>..]&, reader: const R&, name: const u8[:], begin: i64, end: i64) {
     let tid = reader.reference_id(name); check(tid >= 0 && end >= begin);
     if begin < end && begin < reader.references[tid as i64].length {
         intervals.push(Interval { tid: tid, begin: begin, end: min(end, reader.references[tid as i64].length), ordinal: intervals.len });
     }
 }
 
-fn read(path: const u8[:], variants: bool, reader: const bam::Reader&, intervals: Interval[>..]&) {
+fn read<R>(path: const u8[:], variants: bool, reader: const R&, intervals: Interval[>..]&) {
     let input = Input { .. }; input.open(path); defer input.close();
     if !input.fill() { return; }
     if variants && input.buffer[input.begin] == 'B' {

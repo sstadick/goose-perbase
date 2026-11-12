@@ -1,0 +1,78 @@
+{
+  "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+  "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+  "input_sha256": "825dd615bcba2d4e841e46e775a7b4a9ab75d146ddfb15f8b10a1956e5d20012",
+  "input_bytes": 551523443,
+  "rounds": 3,
+  "command": "merge-adjacent",
+  "threads_flag": null,
+  "extra_flags": [],
+  "native_flags": "-O3 -march=native",
+  "note": "Build both binaries with documented flags first. This runner does not establish external binary provenance.",
+  "results": {
+    "goose": {
+      "binary_sha256": "8d4944e9c714f5c3888ed0fb3f91db0bc7344d9c7be547dfac8dd2f6a93fa793",
+      "samples_seconds": [
+        4.55460352,
+        4.500681969,
+        4.462830237
+      ],
+      "median_seconds": 4.500681969,
+      "peak_rss_kib": 2816
+    },
+    "rust": {
+      "binary_sha256": "2240bdc53808040c5155699eb219d45a8f00fdd587f674dd97cc9d46a85d3299",
+      "samples_seconds": [
+        4.938468403,
+        4.916077045,
+        4.851183832
+      ],
+      "median_seconds": 4.916077045,
+      "peak_rss_kib": 4096
+    }
+  },
+  "source_sha256": {
+    "main.goose": "ebd49a93ab3628ccc1ae9a72ce624553273d07c3f3791ec158d12ad91b0f4644",
+    "merge_adjacent.goose": "0ff93839c9f5a587af8551d6feae148e4cd87bbe4db5fe690ba156e07ab19ab9",
+    "only_depth.goose": "332a3c6fda5b0440ff090e10479fe8e1496bb518215a8ca8f15060f066d6f2b3",
+    "output.goose": "adabe53333675dc525a2b2b9db655e285e2320789945630ec85e0057feb3fb11",
+    "perbase.goose": "2dd13e341375fcee5e719c822e0c30e6b2dc39e122122f0ff7e5ea15101cedb8",
+    "regions.goose": "53283a530477d0c1705615130743ce38c523e88481986170fde09aa48867d2fa"
+  },
+  "seqair_source_sha256": {
+    "pileup.goose": "14b24c6bfc430e3dc9db00cbb4daca2a2bf23aa8a49bd7339e2f612fa9216091",
+    "cram.goose": "7fbc35a971799421e345c25f94e0c89ca58ead4a3f1f41bf1f45c8321349fc78"
+  },
+  "commands": {
+    "goose": [
+      "/home/seth/dev/goose-perbase/build/goose-perbase",
+      "merge-adjacent",
+      "/srv/goose-perbase/paper-chr20-depth.tsv",
+      "-o",
+      "/srv/goose-perbase/perbase-bench-0j74axd7/goose.tsv"
+    ],
+    "rust": [
+      "/srv/goose-perbase/rust-current-target/release/perbase",
+      "merge-adjacent",
+      "/srv/goose-perbase/paper-chr20-depth.tsv",
+      "-o",
+      "/srv/goose-perbase/perbase-bench-0j74axd7/rust.tsv"
+    ]
+  },
+  "encoded_output_bytes": {
+    "goose": 551442433,
+    "rust": 551442433
+  },
+  "output_sha256": "f4a6c210ceaeba1d0ccc93ca8f83a77fbfac6fd35007f380ae5c01e9ae1df62c",
+  "speedup": 1.092296029548672
+}

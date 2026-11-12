@@ -4,6 +4,8 @@ import perbase;
 import output;
 import regions;
 import only_depth;
+import merge_adjacent;
+import alignment;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
 import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
@@ -82,13 +84,11 @@ fn fetch(cache: ReferenceCache&, reference: faidx::Reader&, name: const u8[:], j
 }
 
 thread_fn worker(config: Config) {
-    let reader = bam::Reader { .. }; defer reader.close();
-    check(reader.open(config.reads) == bam::Status.Record, "cannot read BAM header");
-    let index = bam_index::Index { .. };
-    check(index.open(config.index) == bam::Status.Record, "cannot read BAM index");
-    let reference = faidx::Reader { .. }; defer reference.close();
+    let bam_reader = bam::Reader { .. }; let index = bam_index::Index { .. }; let reference = faidx::Reader { .. };
+    defer bam_reader.close(); defer reference.close();
+    let reader = alignment::Reader { bam_reader: bam_reader, index: index, reference: reference, .. };
+    check(reader.open(bam_reader, index, reference, config.reads, config.index, config.reference) == bam::Status.Record, "cannot open indexed alignment or reference");
     let has_reference = config.reference.len > 0;
-    if has_reference { check(reference.open(config.reference) == faidx::Status.Ok, "cannot open indexed FASTA"); }
     let store = pileup::Store { .. }; let mates = perbase::MateCounter { .. }; let cache = ReferenceCache { .. };
     let depth = only_depth::Counter { .. }; let changed = bitvec::BitVec { .. };
     var text: u8[>..] = []; var bases: u8[>..] = []; var admitted: bool[>..] = []; var selected: pileup::Entry[>..] = [];
@@ -96,19 +96,19 @@ thread_fn worker(config: Config) {
         let job = qget<Job>(); if job.id < 0 { break; }
         text.clear();
         if config.depth.enabled {
-            check(depth.load(changed, reader, index, job.tid, job.begin, job.end, config.filters.include_flags,
+            check(depth.load(changed, reader, job.tid, job.begin, job.end, config.filters.include_flags,
                 config.filters.exclude_flags, config.filters.min_mapq, config.mate_mode > 0, config.depth.fast) == bam::Status.Record,
                 "cannot read indexed BAM region");
             let ref = reader.references[job.tid as i64]; let name = reader.names[ref.name..ref.name + ref.name_len];
             depth.write(changed, text, name, job.begin, config.coordinate_base, config.depth, config.keep_zeros);
             check(qput(Result { id: job.id, data: text[..] }), "result queue full"); continue;
         }
-        check(store.load_indexed(reader, index, job.tid, job.begin, job.end, pileup::Filter { exclude_flags: 0, min_mapq: 0, retain_zero_span: true }) == bam::Status.Record,
+        check(reader.load(store, job.tid, job.begin, job.end) == bam::Status.Record,
             "cannot load BAM region (invalid, unsorted, or region exceeds slab limit)");
         let restricted = perbase::admit(store, min(config.max_depth, 2147483647), admitted);
         if config.mate_mode > 0 { mates.prepare(store); }
         let ref = reader.references[job.tid as i64]; let name = reader.names[ref.name..ref.name + ref.name_len];
-        if has_reference && (store.records.len > 0 || config.keep_zeros) { cache.fetch(reference, name, job, config.cache_size, bases); }
+        if has_reference && (store.records.len > 0 || config.keep_zeros) { cache.fetch(reader.reference, name, job, config.cache_size, bases); }
         var next = job.begin;
         store.columns() { position, raw =>
             if restricted {
@@ -141,11 +141,30 @@ thread_fn worker(config: Config) {
 fn main() {
     let argv = args();
     if argv.len < 2 || argv[1] == "--help" || argv[1] == "-h" {
-        write_stdout("Usage: goose-perbase <base-depth|only-depth> [OPTIONS] <reads.bam>\n"); return;
+        write_stdout("Usage: goose-perbase <base-depth|only-depth|merge-adjacent> [OPTIONS] [INPUT]\n"); return;
     }
-    if argv[1] == "only-depth" {
-        if argv.len == 2 { write_stdout(opts::help<only_depth::Options>("goose-perbase only-depth")); return; }
-        let d, help, error = opts::parse<only_depth::Options>(argv[2..]);
+    if argv[1] == "merge-adjacent" {
+        let merge_options, help, error = opts::parse<merge_adjacent::Options>(argv[2..]);
+        if error.len != 0 { fail(error); }
+        if help { write_stdout(opts::help<merge_adjacent::Options>("goose-perbase merge-adjacent")); return; }
+        merge_adjacent::run(merge_options); return;
+    }
+    if argv[1] == "only-depth" { run_only(argv[2..]); return; }
+    if argv[1] != "base-depth" { fail("expected base-depth, only-depth or merge-adjacent"); }
+    run_base(argv[2..]);
+}
+
+fn run_base<S>(argv: S[:]) {
+    if argv.len == 0 { write_stdout(opts::help<Options>("goose-perbase base-depth")); return; }
+    let options, help, error = opts::parse<Options>(argv);
+    if error.len != 0 { fail(error); }
+    if help { write_stdout(opts::help<Options>("goose-perbase base-depth")); return; }
+    run(options);
+}
+
+fn run_only<S>(argv: S[:]) {
+        if argv.len == 0 { write_stdout(opts::help<only_depth::Options>("goose-perbase only-depth")); return; }
+        let d, help, error = opts::parse<only_depth::Options>(argv);
         if error.len != 0 { fail(error); }
         if help { write_stdout(opts::help<only_depth::Options>("goose-perbase only-depth")); return; }
         check(!d.mate_fix.value || !d.fast_mode.value, "mate-fix conflicts with fast-mode");
@@ -157,14 +176,7 @@ fn main() {
             include_flags: copy(d.include_flags), exclude_flags: copy(d.exclude_flags),
             mate_fix: copy(d.mate_fix), skip_merging_intervals: copy(d.skip_merging_intervals),
             min_mapq: copy(d.min_mapq), keep_zeros: copy(d.keep_zeros), zero_base: copy(d.zero_base), .. };
-        run(common, only_depth::Mode { enabled: true, fast: d.fast_mode.value, no_merge: d.no_merge.value, bed: d.bed_format.value }); return;
-    }
-    if argv[1] != "base-depth" { fail("expected base-depth or only-depth"); }
-    if argv.len == 2 { write_stdout(opts::help<Options>("goose-perbase base-depth")); return; }
-    let options, help, error = opts::parse<Options>(argv[2..]);
-    if error.len != 0 { fail(error); }
-    if help { write_stdout(opts::help<Options>("goose-perbase base-depth")); return; }
-    run(options);
+        run(common, only_depth::Mode { enabled: true, fast: d.fast_mode.value, no_merge: d.no_merge.value, bed: d.bed_format.value });
 }
 
 fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. }) {
@@ -181,21 +193,12 @@ fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. 
         check(options.output.value.len == 0 || options.output.value == "-" || options.output.value != path, "output would overwrite input");
     }
     let mode = perbase::strategy(options.mate_resolution_strategy.value); check(mode > 0, "unknown mate-resolution-strategy");
-    let reader = bam::Reader { .. }; defer reader.close();
-    check(reader.open(options.reads.value) == bam::Status.Record, "cannot read BAM header");
-    var index_path: u8[>..] = []; format(index_path, options.reads.value, ".bai");
-    if !file_exists(index_path) {
-        index_path.clear(); format(index_path, options.reads.value, ".csi");
-        if !file_exists(index_path) && options.reads.value.len > 4 {
-            index_path.clear(); format(index_path, options.reads.value[..options.reads.value.len - 4], ".bai");
-        }
-    }
-    let index = bam_index::Index { .. }; check(index.open(index_path) == bam::Status.Record, "missing or invalid BAI/CSI index");
-    check(index.references.len == reader.references.len, "index/reference dictionary mismatch");
-    let reference = faidx::Reader { .. }; defer reference.close();
-    if options.ref_fasta.value.len > 0 { check(reference.open(options.ref_fasta.value) == faidx::Status.Ok, "cannot open indexed FASTA"); }
+    let bam_reader = bam::Reader { .. }; let index = bam_index::Index { .. }; let reference = faidx::Reader { .. };
+    defer bam_reader.close(); defer reference.close();
+    let reader = alignment::Reader { bam_reader: bam_reader, index: index, reference: reference, .. };
+    check(reader.open(bam_reader, index, reference, options.reads.value, "", options.ref_fasta.value) == bam::Status.Record, "cannot open indexed alignment or reference");
     let workers = max(1, min(options.threads.value, hardware_threads()) - 2);
-    let config = Config { reads: options.reads.value, index: index_path[..], reference: options.ref_fasta.value,
+    let config = Config { reads: options.reads.value, index: reader.index_path[..], reference: options.ref_fasta.value,
         filters: perbase::Filters { include_flags: options.include_flags.value as u16, exclude_flags: options.exclude_flags.value as u16,
             min_mapq: options.min_mapq.value as u8, min_base_quality: options.min_base_quality_score.value as u8 },
         mate_mode: if options.mate_fix.value { mode } else { 0 }, keep_zeros: options.keep_zeros.value,

@@ -1,0 +1,70 @@
+{
+  "started_utc": "2026-11-12T21:27:25.083921+00:00",
+  "goose_release": "v0.1.0",
+  "goose_commit": "26ef4da59d6ababe07f92ac95e3f7f9deb76e517",
+  "rust_release": "v1.4.1",
+  "rust_commit": "213e77439b2c216662528c5eebfff2d18492d025",
+  "goose_version": "goose v2026.3-269-g74c641c5 (runtime 3025e5810379)",
+  "goose_compiler_sha256": "73ba317ddeed213b33a771e06153be0d0b8aec3d79e9a8ca182ffba6de0840c4",
+  "rust_version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "clang_version": "Ubuntu clang version 18.1.3 (1ubuntu1)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin",
+  "native_flags": "-O3 -march=native",
+  "rustflags": "-C opt-level=3 -C target-cpu=native -C linker=clang",
+  "fresh_builds": true,
+  "goose_binary_sha256": "5914ff5a8351abc6d46090f39bc7b7c575184ed2781a6f8b34714a010f0d0053",
+  "rust_binary_sha256": "87a62295bddaee283901bf3049b8710ebfc19f30510c6551f055e693ec5c0b44",
+  "goose_source_clean": true,
+  "rust_source_clean": true,
+  "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           43 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  32\nOn-line CPU(s) list:                     0-31\nVendor ID:                               AuthenticAMD\nModel name:                              AMD Ryzen 9 3950X 16-Core Processor\nCPU family:                              23\nModel:                                   113\nThread(s) per core:                      2\nCore(s) per socket:                      16\nSocket(s):                               1\nStepping:                                0\nFrequency boost:                         enabled\nCPU(s) scaling MHz:                      55%\nCPU max MHz:                             4761.2300\nCPU min MHz:                             2200.0000\nBogoMIPS:                                7000.24\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl nonstop_tsc cpuid extd_apicid aperfmperf rapl pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c rdrand lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx cpb cat_l3 cdp_l3 hw_pstate ssbd mba ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 cqm rdt_a rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local clzero irperf xsaveerptr rdpru wbnoinvd arat npt lbrv svm_lock nrip_save tsc_scale vmcb_clean flushbyasid decodeassists pausefilter pfthreshold avic v_vmsave_vmload vgif v_spec_ctrl umip rdpid overflow_recov succor smca sev sev_es ibpb_exit_to_user\nVirtualization:                          AMD-V\nL1d cache:                               512 KiB (16 instances)\nL1i cache:                               512 KiB (16 instances)\nL2 cache:                                8 MiB (16 instances)\nL3 cache:                                64 MiB (4 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-31\nVulnerability Gather data sampling:      Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Mitigation; untrained return thunk; SMT enabled with STIBP protection\nVulnerability Spec rstack overflow:      Mitigation; Safe RET\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Mitigation; IBPB before exit to userspace",
+  "memory_before": "total        used        free      shared  buff/cache   available\nMem:     67338592256  4932747264   839479296    20619264 62849601536 62405844992\nSwap:     8589930496  4620288000  3969642496",
+  "paper_source_commit": "c761eb9b4ce53eb6e7110dcb882ee5627b97b0c6",
+  "paper_protocol": "Full HG00157.final.bam; base-depth standard and -m Original; -t 32; uncompressed TSV. Rust comparator is v1.4.1, not the historical paper binary. One warmup per binary plus three measured paired runs, alternating order; full output SHA-256 outside timing; no fsync or cache dropping. No Sambamba rerun.",
+  "data_source": "/home/seth/dev/perbase/paper/data/HG00157.final.bam",
+  "input_bytes": 36861040449,
+  "input_sha256": "2234b6b5ce2731474d6355c64e2521ebd750b9e0ec2ff7a2472bafeddcae2d05",
+  "index_sha256": "56603526b7a701663f7551f841e983992aeb53d5612de955f573c1a5f2dbb336",
+  "result": "blocked; no completed full-genome timing samples",
+  "full_genome_goose_exit": 1,
+  "full_genome_command": [
+    "goose-perbase",
+    "base-depth",
+    "HG00157.final.bam",
+    "-t",
+    "32",
+    "-c",
+    "1000000",
+    "-o",
+    "output.tsv"
+  ],
+  "failing_region": {
+    "region_zero_based_half_open": [
+      "chr1",
+      125000000,
+      126000000
+    ],
+    "mapped_records": 674303,
+    "slab_payload_lower_bound_bytes_excluding_aux": 230585623,
+    "slab_payload_lower_bound_MiB": 219.90358638763428,
+    "release_limit_bytes": 268435456,
+    "method": "Independent pysam indexed fetch; sum QNAME bytes + twice sequence length + 4 bytes per CIGAR operation; auxiliary fields excluded.",
+    "auxiliary_bytes": 86011881,
+    "slab_payload_bytes": 316597504,
+    "slab_payload_MiB": 301.930908203125,
+    "auxiliary_method": "Sum original BAM tag types exposed by pysam: 3-byte tag/type prefix plus scalar width, NUL-terminated string, or array subtype/count/payload."
+  },
+  "regional_controls": {
+    "goose_standard_exit": 1,
+    "goose_mate_fix_exit": 1,
+    "rust_standard_exit": 0,
+    "flags": [
+      "-t",
+      "32",
+      "-b",
+      "failing-region.bed"
+    ]
+  },
+  "diagnostic": "A separate clone with error-context logging reported Status.TooLarge, while the BAM reader status remained Status.Record. Official benchmark executable unchanged.",
+  "diagnostic_stderr": "FAILED chr1:125000000-126000000 status=Status.TooLarge bam_status=Status.Record virtual_offset=107363511005374\ngoose-perbase: cannot load alignment region (reference, invalid data, sorting, or slab limit)\n",
+  "rust_regional_resource_log": "\tCommand being timed: \"rust-target/release/perbase base-depth data/HG00157.final.bam -t 32 -b data/failing-region.bed -o data/rust-region.tsv\"\n\tUser time (seconds): 9.15\n\tSystem time (seconds): 2.81\n\tPercent of CPU this job got: 100%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 0:11.87\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 5237432\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 3\n\tMinor (reclaiming a frame) page faults: 1317224\n\tVoluntary context switches: 398\n\tInvoluntary context switches: 547\n\tSwaps: 0\n\tFile system inputs: 10792\n\tFile system outputs: 20160\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n",
+  "source_clean_after": true
+}

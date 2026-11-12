@@ -8,7 +8,7 @@ import merge_adjacent;
 import alignment;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
-import seqair from "github.com/sstadick/goose-seqair@v0.2.1";
+import seqair from "github.com/sstadick/goose-seqair@v0.2.2";
 import seqair.bam;
 import seqair.bam_index;
 import seqair.pileup;
@@ -46,6 +46,7 @@ struct Options {
     zero_base: opts::Field<bool> = opts::Field<bool> { long: "zero-base", short: "z", help: "Zero-based output positions" },
     ref_cache_size: opts::Field<i64> = opts::Field<i64> { value: 10, long: "ref-cache-size", help: "Maximum cached reference windows per worker" },
     max_depth: opts::Field<i64> = opts::Field<i64> { value: 100000, long: "max-depth", short: "D", help: "HTSlib-compatible read admission limit" },
+    max_region_bytes: opts::Field<i64> = opts::Field<i64> { value: 4294967295, long: "max-region-bytes", help: "Retained payload bytes per region, 1..4294967295; not total RAM" },
 }
 
 // Only owned flat data crosses a worker boundary. Native handles are opened
@@ -53,6 +54,7 @@ struct Options {
 struct Config {
     reads: u8[], index: u8[], reference: u8[], filters: perbase::Filters,
     mate_mode: i64, keep_zeros: bool, coordinate_base: i64, max_depth: i64, cache_size: i64,
+    max_region_bytes: i64,
     depth: only_depth::Mode,
 }
 struct Job { id: i64, tid: i32, begin: i64, end: i64 }
@@ -94,7 +96,7 @@ thread_fn worker(config: Config) {
     let source = alignment::Reference { reader: reference };
     check(reader.open(bam_reader, index, cram_reader, crai, reference, config.reads, config.index, config.reference) == bam::Status.Record, "cannot open indexed alignment or reference");
     let has_reference = config.reference.len > 0;
-    let store = pileup::Store { .. }; let mates = perbase::MateCounter { .. }; let cache = ReferenceCache { .. };
+    let store = pileup::Store { max_bytes: config.max_region_bytes, .. }; let mates = perbase::MateCounter { .. }; let cache = ReferenceCache { .. };
     let depth = only_depth::Counter { .. }; let changed = bitvec::BitVec { .. };
     var text: u8[>..] = []; var bases: u8[>..] = []; var admitted: bool[>..] = []; var selected: pileup::Entry[>..] = [];
     loop {
@@ -116,7 +118,7 @@ thread_fn worker(config: Config) {
         let status = if reader.is_cram { alignment::load(store, cram_reader, crai, cursor, source, job.tid, job.begin, job.end) }
             else { store.load_indexed(bam_reader, index, job.tid, job.begin, job.end,
                 pileup::Filter { exclude_flags: 0, min_mapq: 0, retain_zero_span: true }) };
-        check(status == bam::Status.Record, "cannot load alignment region (reference, invalid data, sorting, or slab limit)");
+        check(status == bam::Status.Record, "cannot load alignment region (reference, invalid data, sorting, or size limit; --max-region-bytes controls retained payload)");
         let restricted = perbase::admit(store, min(config.max_depth, 2147483647), admitted);
         if config.mate_mode > 0 { mates.prepare(store); }
         let ref = reader.references[job.tid as i64]; let name = reader.names[ref.name..ref.name + ref.name_len];
@@ -195,6 +197,7 @@ fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. 
     check(options.threads.value > 0 && options.compression_threads.value > 0, "thread counts must be positive");
     check(options.chunksize.value > 0 && options.chunksize.value <= 4294967295, "invalid chunksize");
     check(options.max_depth.value >= 0 && options.max_depth.value <= 4294967295, "invalid max-depth");
+    check(options.max_region_bytes.value > 0 && options.max_region_bytes.value <= 4294967295, "max-region-bytes must be 1..4294967295");
     check(options.ref_cache_size.value >= 0 && options.ref_cache_size.value <= 1048576, "invalid ref-cache-size");
     check(options.compression_level.value >= 0 && options.compression_level.value <= 9, "invalid compression-level");
     let modifier, modifier_ok = parse_flt(options.channel_size_modifier.value);
@@ -215,7 +218,8 @@ fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. 
         filters: perbase::Filters { include_flags: options.include_flags.value as u16, exclude_flags: options.exclude_flags.value as u16,
             min_mapq: options.min_mapq.value as u8, min_base_quality: options.min_base_quality_score.value as u8 },
         mate_mode: if options.mate_fix.value { mode } else { 0 }, keep_zeros: options.keep_zeros.value,
-        coordinate_base: if options.zero_base.value { 0 } else { 1 }, max_depth: options.max_depth.value, cache_size: options.ref_cache_size.value, depth: depth };
+        coordinate_base: if options.zero_base.value { 0 } else { 1 }, max_depth: options.max_depth.value, cache_size: options.ref_cache_size.value,
+        max_region_bytes: options.max_region_bytes.value, depth: depth };
     var intervals: regions::Interval[>..] = [];
     if options.bed_file.value.len > 0 { regions::read(options.bed_file.value, false, reader, intervals); }
     if options.bcf_file.value.len > 0 { regions::read(options.bcf_file.value, true, reader, intervals); }

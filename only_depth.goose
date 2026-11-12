@@ -3,7 +3,7 @@ namespace only_depth;
 import std;
 import dictionary;
 import alignment;
-import seqair from "github.com/sstadick/goose-seqair@v0.2.1";
+import seqair from "github.com/sstadick/goose-seqair@v0.2.2";
 import seqair.bam;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";

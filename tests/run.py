@@ -181,6 +181,11 @@ def cram_tests(args, directory):
                     expected = run(args.perbase, subcommand, cram, oracle_flags)
                     assert run(args.goose, subcommand, decoded, flags) == expected, ("decoded BAM control", name, flags)
                     assert run(args.goose, subcommand, cram, flags) == expected, ("CRAM", name, flags)
+            if subcommand == "base-depth" and name == "v30":
+                flags = ["-t", 6, "-c", 19, "-r", reference]
+                expected = run(args.perbase, subcommand, cram, flags)
+                assert run(args.goose, subcommand, cram, [*flags, "--max-region-bytes", 1000000]) == expected
+                run(args.goose, subcommand, cram, [*flags, "--max-region-bytes", 1], ok=False)
             if name in ("embedded", "noref"):
                 flags = ["-t", 1, "-c", 7]
                 assert run(args.goose, subcommand, cram, flags) == run(args.perbase, subcommand, cram, flags)
@@ -257,6 +262,23 @@ def main():
             with pysam.AlignmentFile(bam, "wb", header=header) as out:
                 for record in sorted(records, key=lambda r: (r.reference_id, r.reference_start)): out.write(record)
             pysam.index(str(bam))
+
+        # CLI budget reaches each worker's store; exact fit succeeds and one
+        # byte less fails, independently of the read-admission depth limit.
+        read = pysam.AlignedSegment()
+        read.query_name = "payload"; read.reference_id = 0; read.reference_start = 2
+        read.mapping_quality = 60; read.cigartuples = [(0, 1)]
+        read.query_sequence = "A"; read.query_qualities = [30]; read.set_tag("ZZ", "x" * 32)
+        save([read], header)
+        # 7 name + 1 base + 1 quality + 4 CIGAR + (3 tag/type + 32 string + NUL).
+        expected_payload = run(args.perbase)
+        for threads in (1, 6):
+            for limit in (49, 4294967295):
+                assert run(args.goose, "--max-region-bytes", limit, threads=threads) == expected_payload
+            run(args.goose, "--max-region-bytes", 48, threads=threads, ok=False)
+            run(args.goose, "--max-region-bytes", 48, "-D", 0, threads=threads, ok=False)
+        for limit in (-1, 0, 4294967296):
+            run(args.goose, "--max-region-bytes", limit, ok=False)
 
         # Every mate strategy, including same-QNAME secondary/unpaired records,
         # must group before counting; Seqair's primary-pair links alone do not suffice.

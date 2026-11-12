@@ -2,7 +2,7 @@
 namespace alignment;
 import std;
 import os;
-import seqair from "github.com/sstadick/goose-seqair@v0.2.1";
+import seqair from "github.com/sstadick/goose-seqair@v0.2.2";
 import seqair.bam;
 import seqair.bam_index;
 import seqair.pileup;

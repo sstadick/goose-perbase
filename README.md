@@ -14,7 +14,7 @@ kernels supplied by its dependencies. No Rust or HTSlib runtime is needed.
 
 Requires Goose, Python 3.11+, Clang, and CMake 3.20+. Tested with Goose
 [`74c641c5`](https://github.com/aardappel/goose/commit/74c641c5ac6d762e57e3177678fe9dea414d042a)
-and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.2.1
+and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.2.2
 (CRAI-indexed CRAM), goose-bio v0.4.1 (plain/BGZF indexed FASTA), goose-bgzf
 v0.1.2, goose-io v0.3.0 and goose-bitvec v0.1.0. Goose downloads these dependencies automatically;
 no sibling library checkout is needed. CI checks Linux x86-64 and ARM64 against
@@ -78,6 +78,7 @@ compressed references against Rust with the equivalent plain FASTA.
 | `-r`, `--ref-fasta`; `--ref-cache-size` | Optional reference; 10 cached windows per worker |
 | `-k`, `--keep-zeros`; `-z`, `--zero-base` | Both off |
 | `-D`, `--max-depth` | 100,000; admission before filtering, not a per-position clamp |
+| `--max-region-bytes` | Goose extension: retained payload bytes per region; default and maximum 4,294,967,295 (4 GiB − 1); minimum 1 |
 | `-Z`, `--bgzip`; `-T`, `--compression-threads`; `-L`, `--compression-level` | Off; 4 compression workers; level 2 (0–9 accepted) |
 
 Mate strategies are case-insensitive: `Original`, `N`, `IUPAC`,
@@ -111,18 +112,28 @@ multi-alignment groups; matching small-group insertion order does not guarantee 
 large groups. Missing-SEQ overlapping mates are handled safely here, whereas
 some upstream strategies index absent sequence/qualities.
 
-Goose-seqair's default 256 MiB variable-payload limit applies to each loaded
-region; metadata and reusable allocation capacity add memory beyond that.
-Reduce `-c` for unusually dense regions. Restricted intervals may span an entire
-superchunk rather than one chunk. BAM/index consistency and sorting in
-skipped regions are not exhaustively validated.
+`--max-region-bytes` limits the sum of retained names, decoded bases, qualities,
+CIGAR bytes and auxiliary tags in each worker's loaded BAM/CRAM region. It defaults
+to 4 GiB minus one byte, the aggregate ceiling protecting `u32` slab offsets.
+Buffers grow on demand: this does not preallocate 4 GiB or cap total RAM. Metadata,
+spare capacity, decoding buffers and concurrent workers add memory beyond it.
+For example, `--max-region-bytes 1073741824` sets a 1 GiB payload budget. Values
+are integer bytes; zero and values above the ceiling are rejected. Exceeding the
+budget fails rather than silently truncating reads. This check precedes `-D`
+admission, and neither setting changes the other's limit.
+
+Reduce `-c` if a smaller region is needed, noting that chunk boundaries can affect
+depth-capped results. Restricted intervals may span an entire superchunk rather
+than one chunk. BAM/index consistency and sorting in skipped regions are not
+exhaustively validated.
 
 ## Only-depth
 
 All Perbase v1.4.1 `only-depth` option names are supported for indexed BAM/CRAM.
 The shared input, interval, flag/MAPQ, coordinate, worker and output options
 above apply. This command has **no** base-quality filter, maximum-depth cap,
-mate-resolution strategy or reference-cache-size option. `-r` validates a
+mate-resolution strategy, reference-cache-size or `--max-region-bytes` option;
+it does not retain a pileup region store. `-r` validates a
 supplied indexed FASTA and supplies CRAM decoding, but does not add a reference-base output column.
 
 | Additional/different options | Behavior/defaults |

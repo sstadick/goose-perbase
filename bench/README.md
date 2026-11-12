@@ -1,5 +1,36 @@
 # Perbase benchmarks
 
+## Official v0.1.0 whole-genome rerun: blocked by the region payload limit
+
+The paper's full HG00157 BAM (36,861,040,449 bytes), rather than a chr20 subset,
+was tested with the official Goose v0.1.0 source and pinned dependencies,
+freshly built against Rust Perbase v1.4.1. Both builds use the native optimization
+flags documented below. The paper's `base-depth -t 32` workload uses default
+1,000,000-base chunks and uncompressed TSV output; input and output were placed
+under `/srv`. The intended run was one warmup and three alternating measured
+runs per executable. **Goose failed during its first warmup; there are no valid
+full-genome timing samples or speedup figures for v0.1.0.**
+
+A separate diagnostic build identified `Status.TooLarge` while loading
+zero-based `chr1:[125000000,126000000)`. An independent pysam fetch counted
+674,303 mapped records and 316,597,504 bytes (301.93 MiB) of names, expanded
+bases, qualities, CIGAR operations and auxiliary tags. This exceeds Seqair's
+default 256 MiB payload limit for a region; metadata is additional.
+
+| Control on that region, `-t 32 -b failing-region.bed` | Result |
+| --- | --- |
+| Official Goose v0.1.0, `base-depth` | Exit 1: region load failure |
+| Official Goose v0.1.0, `base-depth -m` | Exit 1: region load failure |
+| Rust Perbase v1.4.1, `base-depth` | Exit 0; TSV produced |
+
+The official executable and source were not modified. Smaller chunks were not
+substituted to produce a successful paper-default timing. The diagnostic change
+only added error context in a separate checkout. See the
+[attempt provenance and failure evidence](results/official-v010-paper-attempt.json).
+The earlier subset results below remain historical measurements, not evidence
+that the release completes the paper's whole-genome workload. This rerun does
+not recreate the paper's older Rust binary or its Sambamba comparison.
+
 ## Indexed CRAM and BGZF reference FASTA: Perbase v1.4.1
 
 The same paper chr20 10 Mb subset is re-encoded as CRAM 3.1. The external-

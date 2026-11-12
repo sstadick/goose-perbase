@@ -2,7 +2,7 @@
 
 An experimental Goose port of [Perbase](https://github.com/sstadick/perbase),
 implementing **`base-depth`, `only-depth`, and `merge-adjacent`**. Depth commands
-convert indexed BAM to plain or BGZF TSV; merge-adjacent streams TSV intervals. Base-depth uses
+convert indexed BAM/CRAM to plain or BGZF TSV; merge-adjacent streams TSV intervals. Base-depth uses
 [goose-seqair](https://github.com/sstadick/goose-seqair)'s indexed region slabs
 and raw column iterator, rather than an HTSlib pileup wrapper. The application
 and aggregation are Goose; BGZF decompression and base unpacking use the native
@@ -14,17 +14,18 @@ kernels supplied by its dependencies. No Rust or HTSlib runtime is needed.
 
 Requires Goose, Python 3.11+, Clang, and CMake 3.20+. Tested with Goose
 [`74c641c5`](https://github.com/aardappel/goose/commit/74c641c5ac6d762e57e3177678fe9dea414d042a)
-and Clang 18.1.3 on Linux x86-64. Runtime imports pin released dependencies,
-including goose-seqair v0.1.0 (zero-span retention for depth-cap parity) and
-goose-bio v0.3.1 (indexed FASTA), with goose-io v0.3.0 for file seeking and
-goose-bitvec v0.1.0 for depth transition masks.
-No sibling library checkout is needed.
+and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.2.1
+(CRAI-indexed CRAM), goose-bio v0.4.1 (plain/BGZF indexed FASTA), goose-bgzf
+v0.1.2, goose-io v0.3.0 and goose-bitvec v0.1.0. Goose downloads these dependencies automatically;
+no sibling library checkout is needed. CI checks Linux x86-64 and ARM64 against
+Rust Perbase v1.4.1, including bounds checks and ASan/UBSan.
 
 ```sh
 python3 scripts/build.py
 build/goose-perbase base-depth reads.bam -o depth.tsv
 build/goose-perbase base-depth reads.bam -F 3848 -q 20 -Q 20 -o filtered.tsv
 build/goose-perbase base-depth reads.bam -r reference.fa -o with-reference.tsv
+build/goose-perbase base-depth reads.cram -r reference.fa.gz -o cram-depth.tsv
 build/goose-perbase base-depth reads.bam -t 8 -m -b targets.bed -o targets.tsv
 build/goose-perbase base-depth reads.bam -t 8 -Z -T 4 -L 2 -o depth.tsv.gz
 build/goose-perbase base-depth --help
@@ -39,9 +40,13 @@ The build compiles generated C, native adapters, and libdeflate using
 inlining setting, not the native compiler's optimization level. Native binaries
 target the build machine's CPU; rebuild on a different machine.
 
-The BAM must be coordinate-sorted and indexed (`reads.bam.bai`,
-`reads.bam.csi`, or `reads.bai`). A reference is optional and must be
-uncompressed FASTA with a `.fai` index. Output defaults to stdout; `-o -` also
+Input must be coordinate-sorted and indexed: BAM uses `reads.bam.bai`,
+`reads.bam.csi`, or `reads.bai`; CRAM 3.0/3.1 uses `reads.cram.crai` or
+`reads.crai` (plain or gzip/BGZF). Format detection uses file bytes, not suffix.
+A reference is optional for BAM and embedded/reference-free CRAM. External-
+reference CRAM requires `-r`; no reference downloading or URI fallback occurs.
+FASTA requires `.fai`; BGZF FASTA additionally requires `.gzi`. Ordinary gzip
+FASTA is unsupported. Output defaults to stdout; `-o -` also
 selects stdout. Compression requires `-Z`, not a filename suffix. Errors exit
 nonzero; a failure after processing begins may leave partial output, which must
 be discarded.
@@ -50,9 +55,14 @@ be discarded.
 
 The compatibility target is **Perbase v1.4.1**, revision
 [`213e774`](https://github.com/sstadick/perbase/commit/213e77439b2c216662528c5eebfff2d18492d025).
-All its `base-depth` processing option names are accepted within the indexed
-BAM input scope. SAM/CRAM/stdin alignment input and compressed reference FASTA
-are not implemented. `merge-adjacent` accepts stdin text.
+All its `base-depth` processing option names are accepted for indexed BAM and
+CRAM 3.x. SAM/stdin alignment input, CRAM 2.x and ordinary-gzip reference FASTA
+are not supported. `merge-adjacent` accepts stdin text.
+
+BGZF reference FASTA is an extension beyond Rust v1.4.1's base-depth annotation
+reader, which uses plain-file offsets even for compressed input. Its output can
+be incorrect or its workers can panic. Differential tests compare Goose's
+compressed references against Rust with the equivalent plain FASTA.
 
 | Options | Behavior/defaults |
 | --- | --- |
@@ -109,11 +119,11 @@ skipped regions are not exhaustively validated.
 
 ## Only-depth
 
-All Perbase v1.4.1 `only-depth` option names are supported for indexed BAM.
+All Perbase v1.4.1 `only-depth` option names are supported for indexed BAM/CRAM.
 The shared input, interval, flag/MAPQ, coordinate, worker and output options
 above apply. This command has **no** base-quality filter, maximum-depth cap,
 mate-resolution strategy or reference-cache-size option. `-r` validates a
-supplied indexed FASTA but does not add a reference-base output column.
+supplied indexed FASTA and supplies CRAM decoding, but does not add a reference-base output column.
 
 | Additional/different options | Behavior/defaults |
 | --- | --- |
@@ -135,7 +145,7 @@ the first interval's clipping flag, matching Perbase/rust-lapper even where it
 drops the final base of a later clipped mate. Tests compare these boundaries
 against Rust; this is compatibility behavior, not a corrected coverage policy.
 
-Each worker reuses an indexed BAM reader, a signed 64-bit difference counter
+Each worker reuses an indexed alignment reader, a signed 64-bit difference counter
 and a packed transition mask. It consumes packed records directly, without
 allocating a region's unpacked sequences or walking pileup columns. The bit
 vector marks changed counter positions; it does not represent depth counts.
@@ -145,6 +155,12 @@ processing sparse BAMs with large reference dictionaries.
 Counter storage is approximately 8.125 bytes/base, plus BAM buffers, mate blocks
 and serialized output. With mate fixing, eligible blocks are grouped by exact
 QNAME and sorted/unioned before counting.
+
+CRAM currently reconstructs full selected slices before counting, including
+sequence/qualities; it does not yet skip unused data series for only-depth.
+CRAI queries retain nested overlapping slice spans and decode each selected
+slice once per fetch, in file order. Adjacent fetches reuse compressed containers
+and codec storage, but can reconstruct the same slice again across boundaries.
 
 Workers share the base-depth ordered batch scheduler and BGZF output pool.
 For only-depth, `-C` budgets one 64 KiB scheduling unit per concurrent job;
@@ -176,7 +192,7 @@ by the largest record plus output buffers; BGZF output uses compression workers.
 
 ## Parallel execution and memory
 
-Persistent Goose `thread_fn` workers each open and reuse their own BAM reader,
+Persistent Goose `thread_fn` workers each open and reuse their own BAM/CRAM reader,
 parsed index, region store, reference handle/cache, and output buffers. No file
 descriptor or borrowed view crosses a thread boundary. Jobs and results contain
 owned values copied through typed queues. Ordered, bounded batches keep output
@@ -212,6 +228,8 @@ Cases cover worker
 counts, all mate strategies, BED/VCF/BCF union/duplicates, superchunk boundaries,
 CIGAR operations, flags/qualities, missing SEQ, BAI/CSI, FASTA/zero rows, depth
 admission, quoted names, reader boundaries, empty input, and output failures.
+CRAM checks include 3.0/3.1, multi-reference and multi-slice containers, CRAI,
+external/embedded/reference-free decoding, and plain/BGZF FASTA with FAI/GZI.
 BGZF output is decompressed independently. Real-data benchmarks additionally
 compare every timed TSV byte-for-byte by SHA-256.
 

@@ -5,7 +5,7 @@ import regions;
 import output;
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
 import io from "github.com/sstadick/goose-io@v0.3.0";
-import bgzf from "github.com/sstadick/goose-bgzf@v0.1.0";
+import bgzf from "github.com/sstadick/goose-bgzf@v0.1.2";
 import bstr from "github.com/sstadick/goose-bstr@v0.3.1";
 
 struct Options {

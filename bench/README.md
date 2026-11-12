@@ -1,5 +1,72 @@
 # Perbase benchmarks
 
+## Indexed CRAM and BGZF reference FASTA: Perbase v1.4.1
+
+The same paper chr20 10 Mb subset is re-encoded as CRAM 3.1. The external-
+reference CRAM is 29,163,621 bytes; the BAM is 109,209,558 bytes. Reference
+sequence is chr20 from the paper's `GRCh38_full_analysis_set_plus_decoy_hla.fa`,
+indexed as plain FASTA and BGZF FASTA with FAI/GZI. Encoding and indexing are
+outside timing. These runs preceded publication and used local copies of the
+Seqair CRAI and Bio BGZF changes tagged as v0.2.0 and v0.4.0 respectively,
+with unchanged native build flags. The released application pins their subsequent
+dependency fixes, v0.2.1 and v0.4.1. JSON preserves the measured source hashes;
+these timings are not a rerun of the final release pins.
+
+Three measured runs after one warmup, alternating programs, pinned to CPUs
+0–7. `-t 8` means six workers. Every timed TSV matches by SHA-256. Output is
+plain files under `/srv`, including close but not fsync. Medians and peak RSS:
+
+| Input / command / reference | Goose seconds | Rust seconds | Rust/Goose | Goose MiB | Rust MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| [BAM base-depth, plain FASTA, `-t 8`](results/reference-bam-plain-t8.json) | 3.120 | 5.528 | 1.77× | 1987.2 | 2241.3 |
+| [BAM base-depth, BGZF FASTA, `-t 8`](results/reference-bam-bgzf-t8.json) | 3.128 | 5.532 | 1.77× | 1997.1 | 2211.9 |
+| [CRAM base-depth, plain FASTA, `-t 8`](results/reference-cram-plain-t8.json) | 3.793 | 5.771 | 1.52× | 1955.4 | 2281.8 |
+| [CRAM base-depth, BGZF FASTA, `-t 8`](results/reference-cram-bgzf-t8.json) | 3.828 | 5.818 | 1.52× | 1961.3 | 2264.6 |
+| [CRAM only-depth, BGZF FASTA, `-t 1`](results/reference-cram-only-depth-t1.json) | 3.167 | 6.297 | 1.99× | 81.7 | 84.2 |
+| [CRAM only-depth, BGZF FASTA, `-t 8`](results/reference-cram-only-depth-t8.json) | 1.302 | 2.322 | 1.78× | 359.2 | 287.1 |
+| [BAM only-depth control, no reference, `-t 8`](results/bam-regression-t8.json) | 0.593 | 2.240 | 3.78× | 263.0 | 254.0 |
+
+**Rust base-depth uses the equivalent plain FASTA in all four comparisons.**
+Its `bio::io::fasta::IndexedReader` cannot annotate from BGZF: a small fixture
+panicked or produced a different TSV despite exiting successfully. The runner's
+`--rust-reference` override records the different reference arguments explicitly.
+Rust only-depth uses HTSlib's reference handling, so both programs use the same
+BGZF FASTA in the last CRAM pair. All four base-depth outputs are identical
+(589,954,629 bytes); only-depth emits 83,935,154 identical bytes across formats.
+
+For Goose, BGZF reference overhead is **0.2% on BAM and 0.9% on CRAM** in these
+three-run medians, too small to treat as a precise estimate. CRAM only-depth
+scales **2.43× from one to six workers**, with higher six-worker RSS than Rust.
+It still decodes complete slices, including bases/qualities; selective series
+decoding remains an optimization opportunity. Neighboring fetches reuse
+compressed containers but can reconstruct the same slice again.
+
+The BAM control is 0.593 s versus the earlier 0.581 s median (2.2% slower), with
+overlapping sample ranges. This is a historical control, not an interleaved
+old/new binary benchmark; it shows no large regression, not proof of zero cost.
+
+```sh
+export TMPDIR=/srv/goose-perbase
+python3 bench/run.py "$TMPDIR/paper-chr20-10mb-ref.cram" \
+  --perbase "$TMPDIR/rust-current-target/release/perbase" --command base-depth \
+  --cpus 0,1,2,3,4,5,6,7 --threads 8 --rounds 3 \
+  --output "$TMPDIR/reference-cram-bgzf.json" \
+  --rust-reference "$TMPDIR/paper-chr20.fa" --extra -r "$TMPDIR/paper-chr20.fa.gz"
+# For only-depth, omit --rust-reference; both use the BGZF reference.
+```
+
+An earlier reference-free CRAM 3.1 control (`no_ref=1`, 40,871,998 bytes) used
+the full 32-CPU affinity, so do not combine it with the pinned scaling results:
+
+| Command | Goose seconds | Rust seconds | Rust/Goose |
+| --- | ---: | ---: | ---: |
+| [Only-depth, `-t 1`](results/cram-only-depth-t1.json) | 2.747 | 6.434 | 2.34× |
+| [Only-depth, `-t 8`](results/cram-only-depth-t8.json) | 1.095 | 2.820 | 2.57× |
+| [Base-depth, `-t 8`](results/cram-base-depth-t8.json) | 3.660 | 5.791 | 1.58× |
+
+These too verify every output against Rust. They measure this re-encoding of a
+10 Mb subset, not original paper CRAM compression settings or whole-genome speed.
+
 ## Merge-adjacent: Perbase v1.4.1
 
 Input is the 551,523,443-byte TSV from the full-chr20 only-depth run below.

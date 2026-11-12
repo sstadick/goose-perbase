@@ -118,6 +118,89 @@ def merge_tests(args, directory):
     if Path("/dev/full").exists(): run(args.goose, cases[0][0], "-o", "/dev/full", ok=False)
 
 
+def cram_tests(args, directory):
+    bam = directory / "cram-source.bam"
+    header, records = fixture(bam)
+    # Add real overlapping mates, absent SEQ and a placed unmapped read.
+    for i, pos in enumerate((5, 10)):
+        read = pysam.AlignedSegment()
+        read.query_name = "overlap"; read.reference_id = read.next_reference_id = 0
+        read.reference_start = pos; read.next_reference_start = (10, 5)[i]
+        read.flag = (65, 129)[i]; read.template_length = (16, -16)[i]
+        read.mapping_quality = 60; read.cigartuples = [(0, 11)]
+        read.query_sequence = ("A" if i == 0 else "C") * 11; read.query_qualities = [30 + i] * 11
+        records.append(read)
+    for flag in (0, 4):
+        read = pysam.AlignedSegment(); read.query_name = f"missing-{flag}"
+        read.reference_id = 0; read.reference_start = 12; read.flag = flag
+        read.cigartuples = [(0, 2), (2, 1), (3, 2), (0, 1)]; read.mapping_quality = 40
+        records.append(read)
+    records.sort(key=lambda r: (r.reference_id, r.reference_start))
+    with pysam.AlignmentFile(bam, "wb", header=header) as out:
+        for record in records: out.write(record)
+    pysam.index(str(bam))
+    reference = directory / "cram-ref.fa"
+    reference.write_text(">chrA\n" + "acgTN" * 19 + "A\n>chrB\n" + "TGcaN" * 6 + "C\n")
+    pysam.faidx(str(reference))
+    packed_reference = directory / "cram-ref.fa.gz"
+    pysam.tabix_compress(str(reference), str(packed_reference), force=True)
+    pysam.faidx(str(packed_reference))
+    bed = directory / "cram-regions.bed"
+    bed.write_text("chrB\t0\t23\nchrA\t4\t27\nchrA\t10\t15\n")
+
+    def run(exe, command, path, flags=(), ok=True):
+        result = subprocess.run([str(exe.resolve()), command, str(path), *map(str, flags)],
+                                capture_output=True, timeout=60, env=dict(os.environ, RUST_LOG="error"))
+        assert (result.returncode == 0) == ok, (command, path, flags, result.stderr)
+        return result.stdout
+
+    formats = [("v30", ["version=3.0"]), ("v31", ["version=3.1"]),
+               ("slices", ["seqs_per_slice=3", "slices_per_container=2"]),
+               ("multi", ["multi_seq_per_slice=1", "seqs_per_slice=100"]),
+               ("embedded", ["embed_ref=2"]), ("noref", ["no_ref=1"])]
+    for name, encoding in formats:
+        cram = directory / f"{name}.cram"
+        command = ["--no-PG", "-C", "-T", str(reference), "-o", str(cram)]
+        for option in encoding: command += ["--output-fmt-option", option]
+        pysam.view(*command, str(bam), catch_stdout=False); pysam.index(str(cram))
+        # CRAM normalizes =/X CIGARs and sequence '='. Use HTSlib's decoded BAM
+        # for the cross-format control, never the port's reconstructed records.
+        decoded = directory / "decoded.bam"
+        pysam.view("--no-PG", "-b", "-T", str(reference), "-o", str(decoded), str(cram), catch_stdout=False)
+        pysam.index(str(decoded))
+        for subcommand in ("base-depth", "only-depth"):
+            cases = [[], ["-k", "-z", "-F", "256", "-q", "20", "-b", bed, "-M"], ["-m"]]
+            cases += [["-D", "2", "-Q", "20"]] if subcommand == "base-depth" else [["-x"], ["-n", "-k"], ["-m", "--bed-format", "-z"]]
+            for threads, chunk in ((1, 7), (6, 19)):
+                for options in cases:
+                    # Rust base-depth's bio::IndexedReader only handles plain
+                    # FASTA. Keep its oracle reference uncompressed; compare
+                    # Goose with the equivalent BGZF file as well.
+                    oracle_flags = ["-t", threads, "-c", chunk, "-r", reference, *options]
+                    flags = ["-t", threads, "-c", chunk, "-r", reference if threads == 1 else packed_reference, *options]
+                    expected = run(args.perbase, subcommand, cram, oracle_flags)
+                    assert run(args.goose, subcommand, decoded, flags) == expected, ("decoded BAM control", name, flags)
+                    assert run(args.goose, subcommand, cram, flags) == expected, ("CRAM", name, flags)
+            if name in ("embedded", "noref"):
+                flags = ["-t", 1, "-c", 7]
+                assert run(args.goose, subcommand, cram, flags) == run(args.perbase, subcommand, cram, flags)
+            else:
+                run(args.goose, subcommand, cram, ["-t", 1], ok=False)
+        index = Path(str(cram) + ".crai")
+        index.write_bytes(gzip.decompress(index.read_bytes()))
+        index.rename(cram.with_suffix(".crai"))
+        flags = ["-t", 1, "-r", reference]
+        assert run(args.goose, "base-depth", cram, flags) == run(args.perbase, "base-depth", decoded, flags)
+        cram.with_suffix(".crai").unlink()
+        run(args.goose, "base-depth", cram, flags, ok=False)
+    ordinary = directory / "ordinary.fa.gz"
+    ordinary.write_bytes(gzip.compress(reference.read_bytes()))
+    Path(str(ordinary) + ".fai").write_bytes(Path(str(reference) + ".fai").read_bytes())
+    run(args.goose, "base-depth", bam, ["-r", ordinary], ok=False)
+    Path(str(packed_reference) + ".gzi").unlink()
+    run(args.goose, "base-depth", bam, ["-r", packed_reference], ok=False)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--perbase", type=Path, required=True)
@@ -127,6 +210,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="goose-perbase-tests-") as t:
         directory = Path(t); bam = directory / "input.bam"
         merge_tests(args, directory)
+        cram_tests(args, directory)
         def run(exe, *flags, ok=True, path=bam, threads=1, command="base-depth"):
             result = subprocess.run([str(exe.resolve()), command, str(path), "-t", str(threads), *map(str, flags)], capture_output=True, env=env, timeout=60)
             assert (result.returncode == 0) == ok, (exe, flags, result.stderr.decode())

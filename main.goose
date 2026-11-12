@@ -8,22 +8,25 @@ import merge_adjacent;
 import alignment;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
-import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
+import seqair from "github.com/sstadick/goose-seqair@v0.2.1";
 import seqair.bam;
 import seqair.bam_index;
 import seqair.pileup;
-import bio from "github.com/sstadick/goose-bio@v0.3.1";
+import seqair.cram;
+import seqair.cram_index;
+import bio from "github.com/sstadick/goose-bio@v0.4.1";
 import bio.faidx;
-import bgzf from "github.com/sstadick/goose-bgzf@v0.1.0";
+import bgzf from "github.com/sstadick/goose-bgzf@v0.1.2";
 import deflate from "github.com/sstadick/goose-deflate@v0.1.0";
 import io from "github.com/sstadick/goose-io@v0.3.0";
 import bstr from "github.com/sstadick/goose-bstr@v0.3.1";
 import simd_bytes from "github.com/sstadick/goose-simd@v0.3.0";
+import simd_bytes.simd_int;
 
 struct Options {
-    reads: opts::Field<const u8[:]> = opts::Field<const u8[:]> { required: true, positional: true, help: "Coordinate-sorted indexed BAM" },
+    reads: opts::Field<const u8[:]> = opts::Field<const u8[:]> { required: true, positional: true, help: "Coordinate-sorted indexed BAM or CRAM 3.x" },
     output: opts::Field<const u8[:]> = opts::Field<const u8[:]> { short: "o", help: "Output file; default stdout" },
-    ref_fasta: opts::Field<const u8[:]> = opts::Field<const u8[:]> { long: "ref-fasta", short: "r", help: "Uncompressed FASTA with .fai" },
+    ref_fasta: opts::Field<const u8[:]> = opts::Field<const u8[:]> { long: "ref-fasta", short: "r", help: "FASTA with .fai; BGZF also requires .gzi" },
     bed_file: opts::Field<const u8[:]> = opts::Field<const u8[:]> { long: "bed-file", short: "b", help: "BED regions of interest" },
     bcf_file: opts::Field<const u8[:]> = opts::Field<const u8[:]> { long: "bcf-file", short: "B", help: "VCF/BCF positions (union with BED)" },
     bgzip: opts::Field<bool> = opts::Field<bool> { short: "Z", help: "BGZF-compress output" },
@@ -85,9 +88,11 @@ fn fetch(cache: ReferenceCache&, reference: faidx::Reader&, name: const u8[:], j
 
 thread_fn worker(config: Config) {
     let bam_reader = bam::Reader { .. }; let index = bam_index::Index { .. }; let reference = faidx::Reader { .. };
-    defer bam_reader.close(); defer reference.close();
-    let reader = alignment::Reader { bam_reader: bam_reader, index: index, reference: reference, .. };
-    check(reader.open(bam_reader, index, reference, config.reads, config.index, config.reference) == bam::Status.Record, "cannot open indexed alignment or reference");
+    let cram_reader = cram::Reader { .. }; let crai = cram_index::Index { .. }; let cursor = cram_index::Cursor { .. };
+    defer bam_reader.close(); defer cram_reader.close(); defer reference.close();
+    let reader = alignment::Header { .. }; let bam_cursor = alignment::BamCursor { .. };
+    let source = alignment::Reference { reader: reference };
+    check(reader.open(bam_reader, index, cram_reader, crai, reference, config.reads, config.index, config.reference) == bam::Status.Record, "cannot open indexed alignment or reference");
     let has_reference = config.reference.len > 0;
     let store = pileup::Store { .. }; let mates = perbase::MateCounter { .. }; let cache = ReferenceCache { .. };
     let depth = only_depth::Counter { .. }; let changed = bitvec::BitVec { .. };
@@ -96,19 +101,26 @@ thread_fn worker(config: Config) {
         let job = qget<Job>(); if job.id < 0 { break; }
         text.clear();
         if config.depth.enabled {
-            check(depth.load(changed, reader, job.tid, job.begin, job.end, config.filters.include_flags,
-                config.filters.exclude_flags, config.filters.min_mapq, config.mate_mode > 0, config.depth.fast) == bam::Status.Record,
-                "cannot read indexed BAM region");
+            let status = if reader.is_cram {
+                depth.load(changed, cram_reader, crai, cursor, source, job.tid, job.begin, job.end, config.filters.include_flags,
+                    config.filters.exclude_flags, config.filters.min_mapq, config.mate_mode > 0, config.depth.fast)
+            } else {
+                depth.load(changed, bam_reader, index, bam_cursor, source, job.tid, job.begin, job.end, config.filters.include_flags,
+                    config.filters.exclude_flags, config.filters.min_mapq, config.mate_mode > 0, config.depth.fast)
+            };
+            check(status == bam::Status.Record, "cannot read indexed alignment region (check reference for CRAM)");
             let ref = reader.references[job.tid as i64]; let name = reader.names[ref.name..ref.name + ref.name_len];
             depth.write(changed, text, name, job.begin, config.coordinate_base, config.depth, config.keep_zeros);
             check(qput(Result { id: job.id, data: text[..] }), "result queue full"); continue;
         }
-        check(reader.load(store, job.tid, job.begin, job.end) == bam::Status.Record,
-            "cannot load BAM region (invalid, unsorted, or region exceeds slab limit)");
+        let status = if reader.is_cram { alignment::load(store, cram_reader, crai, cursor, source, job.tid, job.begin, job.end) }
+            else { store.load_indexed(bam_reader, index, job.tid, job.begin, job.end,
+                pileup::Filter { exclude_flags: 0, min_mapq: 0, retain_zero_span: true }) };
+        check(status == bam::Status.Record, "cannot load alignment region (reference, invalid data, sorting, or slab limit)");
         let restricted = perbase::admit(store, min(config.max_depth, 2147483647), admitted);
         if config.mate_mode > 0 { mates.prepare(store); }
         let ref = reader.references[job.tid as i64]; let name = reader.names[ref.name..ref.name + ref.name_len];
-        if has_reference && (store.records.len > 0 || config.keep_zeros) { cache.fetch(reader.reference, name, job, config.cache_size, bases); }
+        if has_reference && (store.records.len > 0 || config.keep_zeros) { cache.fetch(reference, name, job, config.cache_size, bases); }
         var next = job.begin;
         store.columns() { position, raw =>
             if restricted {
@@ -194,9 +206,10 @@ fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. 
     }
     let mode = perbase::strategy(options.mate_resolution_strategy.value); check(mode > 0, "unknown mate-resolution-strategy");
     let bam_reader = bam::Reader { .. }; let index = bam_index::Index { .. }; let reference = faidx::Reader { .. };
-    defer bam_reader.close(); defer reference.close();
-    let reader = alignment::Reader { bam_reader: bam_reader, index: index, reference: reference, .. };
-    check(reader.open(bam_reader, index, reference, options.reads.value, "", options.ref_fasta.value) == bam::Status.Record, "cannot open indexed alignment or reference");
+    let cram_reader = cram::Reader { .. }; let crai = cram_index::Index { .. }; let cursor = cram_index::Cursor { .. };
+    defer bam_reader.close(); defer cram_reader.close(); defer reference.close();
+    let reader = alignment::Header { .. };
+    check(reader.open(bam_reader, index, cram_reader, crai, reference, options.reads.value, "", options.ref_fasta.value) == bam::Status.Record, "cannot open indexed alignment or reference");
     let workers = max(1, min(options.threads.value, hardware_threads()) - 2);
     let config = Config { reads: options.reads.value, index: reader.index_path[..], reference: options.ref_fasta.value,
         filters: perbase::Filters { include_flags: options.include_flags.value as u16, exclude_flags: options.exclude_flags.value as u16,

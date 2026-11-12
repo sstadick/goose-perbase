@@ -1,0 +1,88 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      CC: clang
+      CXX: clang++
+      GOOSE_CC: clang
+      GOOSE_DOC: .ci/goose-doc/main.goose
+      RUST_LOG: error
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: aardappel/goose
+          ref: 74c641c5ac6d762e57e3177678fe9dea414d042a
+          path: .ci/goose
+      - uses: actions/checkout@v4
+        with:
+          repository: sstadick/goose-doc
+          ref: bb399143866c0c42268f23c8dfda7a447173f93d
+          path: .ci/goose-doc
+      - uses: actions/checkout@v4
+        with:
+          repository: sstadick/perbase
+          ref: 213e77439b2c216662528c5eebfff2d18492d025
+          path: .ci/perbase
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev libbz2-dev liblzma-dev libssl-dev zlib1g-dev pkg-config
+          rustup toolchain install 1.98.1 --profile minimal
+          python3 -m venv .venv
+          .venv/bin/pip install -r tests/requirements.txt
+      - name: Build Goose and the Rust oracle
+        run: |
+          cmake -S .ci/goose -B .ci/goose/build -DCMAKE_BUILD_TYPE=Debug -DGOOSE_BUILTIN_LIBS=
+          cmake --build .ci/goose/build --parallel 2
+          echo "$PWD/.ci/goose/build" >> "$GITHUB_PATH"
+          cargo +1.98.1 build --release --locked --manifest-path .ci/perbase/Cargo.toml
+      - name: Build and compare all commands
+        run: |
+          python3 scripts/build.py
+          .venv/bin/python tests/run.py --perbase .ci/perbase/target/release/perbase
+      - name: Bounds checks and sanitizers
+        run: |
+          python3 scripts/build.py --check
+          .venv/bin/python tests/run.py --goose build/goose-perbase-check --perbase .ci/perbase/target/release/perbase
+      - name: Verify documentation
+        run: |
+          scripts/docs.sh --check
+          scripts/doctest.sh
+      - name: Generate release reference
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          DOC_OUTPUT: ${{ runner.temp }}/API.md
+        run: scripts/docs.sh --source-url "https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-24.04'
+        with:
+          name: api-reference
+          path: ${{ runner.temp }}/API.md
+          if-no-files-found: error
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-reference
+          path: docs
+      - name: Publish tested source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" docs/API.md --verify-tag --generate-notes

@@ -1,7 +1,7 @@
 // Perbase-compatible base-depth aggregation over Seqair-style raw columns.
 namespace perbase;
 import std;
-import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
+import seqair from "github.com/sstadick/goose-seqair@v0.2.1";
 import seqair.bam;
 import seqair.pileup;
 

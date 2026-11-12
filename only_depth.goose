@@ -3,14 +3,13 @@ namespace only_depth;
 import std;
 import dictionary;
 import alignment;
-import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
+import seqair from "github.com/sstadick/goose-seqair@v0.2.1";
 import seqair.bam;
-import seqair.bam_index;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
 
 struct Options {
-    reads: opts::Field<const u8[:]> = opts::Field<const u8[:]> { required: true, positional: true, help: "Coordinate-sorted indexed BAM" },
+    reads: opts::Field<const u8[:]> = opts::Field<const u8[:]> { required: true, positional: true, help: "Coordinate-sorted indexed BAM or CRAM 3.x" },
     output: opts::Field<const u8[:]> = opts::Field<const u8[:]> { short: "o", help: "Output file; default stdout" },
     ref_fasta: opts::Field<const u8[:]> = opts::Field<const u8[:]> { long: "ref-fasta", short: "r", help: "Optional indexed FASTA; not used for BAM depth" },
     bed_file: opts::Field<const u8[:]> = opts::Field<const u8[:]> { long: "bed-file", short: "b", help: "BED regions of interest" },
@@ -67,17 +66,18 @@ fn add_block(counter: Counter&, changed: bitvec::BitVec&, begin: i64, end: i64, 
     else { counter.blocks.push(Block { group: group, begin: a, end: b, ordinal: counter.blocks.len, no_stop: end >= stop }); }
 }
 
-fn load(counter: Counter&, changed: bitvec::BitVec&, reader: alignment::Reader&, tid: i32, start: i64, stop: i64,
+fn load<R, I, C>(counter: Counter&, changed: bitvec::BitVec&, reader: R&, index: I&, cursor: C&, source: alignment::Reference&,
+        tid: i32, start: i64, stop: i64,
         include: u16, exclude: u16, mapq: u8, mate_fix: bool, fast: bool) -> bam::Status {
     // Reuse zeroed storage, clearing only endpoints touched by the last fetch.
     // Clear before resizing: the preceding region may have been longer.
     changed.ones() { pos => counter.delta[pos] = 0; };
     counter.delta.resize(stop - start, 0); changed.reset(stop - start);
     counter.blocks.clear(); counter.names.clear(); counter.groups.clear(); counter.ids.clear();
-    let query = reader.fetch(tid, start, stop);
+    let query = alignment::fetch(reader, index, cursor, tid, start, stop);
     if query != bam::Status.Record { return query; }
     loop {
-        let status = reader.read(); if status == bam::Status.End { break; }
+        let status = alignment::read(reader, cursor, source); if status == bam::Status.End { break; }
         if status != bam::Status.Record { return status; }
         let record = reader.record(); let f = record.fields;
         if f.flags & include != include || f.flags & exclude != 0 || f.mapq < mapq { continue; }

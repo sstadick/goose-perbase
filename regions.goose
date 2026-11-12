@@ -2,10 +2,8 @@
 // BCF genotypes/INFO are skipped, not decoded into an application object model.
 namespace regions;
 import std;
-import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
-import seqair.bam;
-import io from "github.com/sstadick/goose-io@v0.2.2";
-import bgzf from "github.com/sstadick/goose-bgzf@v0.1.0";
+import io from "github.com/sstadick/goose-io@v0.3.0";
+import bgzf from "github.com/sstadick/goose-bgzf@v0.1.2";
 import bstr from "github.com/sstadick/goose-bstr@v0.3.1";
 
 struct Interval { tid: i32, begin: i64, end: i64, ordinal: i64 = 0 }

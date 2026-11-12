@@ -30,6 +30,7 @@ def main():
     p.add_argument("--threads", type=int, default=1)
     p.add_argument("--command", choices=("base-depth", "only-depth", "merge-adjacent"), default="base-depth")
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--rust-reference", type=Path, help="Equivalent plain FASTA for Rust's base-depth reader; overrides -r/--ref-fasta in --extra")
     p.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="Common additional subcommand arguments")
     args = p.parse_args()
     if args.rounds < 1: p.error("rounds must be positive")
@@ -45,8 +46,17 @@ def main():
               "note": "Build both binaries with documented flags first. This runner does not establish external binary provenance.",
               "results": {}}
     report["source_sha256"] = {path.name: digest(path) for path in sorted(ROOT.glob("*.goose"))}
-    report["seqair_source_sha256"] = {name: digest(ROOT.parent / "goose-seqair" / name)
-                                      for name in ("pileup.goose", "cram.goose")}
+    packages = Path(os.environ.get("GOOSE_HOME", Path.home() / ".goose")) / "pkg/github.com/sstadick"
+    report["seqair_source_sha256"] = {name: digest(packages / "goose-seqair/v0.2.1" / name)
+                                      for name in ("pileup.goose", "cram.goose", "cram_index.goose", "src/cram.c")}
+    report["bio_source_sha256"] = {"faidx.goose": digest(packages / "goose-bio/v0.4.1/faidx.goose")}
+    rust_extra = args.extra.copy()
+    if args.rust_reference:
+        references = [i for i, flag in enumerate(rust_extra) if flag in ("-r", "--ref-fasta")]
+        if len(references) != 1 or references[0] + 1 >= len(rust_extra):
+            p.error("--rust-reference requires exactly one -r/--ref-fasta PATH in --extra")
+        rust_extra[references[0] + 1] = str(args.rust_reference.resolve())
+        report["rust_reference_override"] = str(args.rust_reference.resolve())
     programs = {"goose": args.goose.resolve(), "rust": args.perbase.resolve()}
     samples = {name: [] for name in programs}; rss = {name: [] for name in programs}
     expected = None
@@ -56,7 +66,8 @@ def main():
             for name in programs if round_ % 2 == 0 else reversed(programs):
                 output = directory / f"{name}.tsv"; memory = directory / f"{name}.rss"
                 depth_flags = [] if args.command == "merge-adjacent" else ["-t", str(args.threads), "-c", "1000000"]
-                command = [str(programs[name]), args.command, str(args.bam.resolve()), *depth_flags, "-o", str(output), *args.extra]
+                extra = rust_extra if name == "rust" else args.extra
+                command = [str(programs[name]), args.command, str(args.bam.resolve()), *depth_flags, "-o", str(output), *extra]
                 report.setdefault("commands", {})[name] = command
                 start = time.perf_counter_ns()
                 subprocess.run(["/usr/bin/time", "-f", "%M", "-o", str(memory), *command],

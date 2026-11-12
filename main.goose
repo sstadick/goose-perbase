@@ -3,6 +3,8 @@ import os;
 import perbase;
 import output;
 import regions;
+import only_depth;
+import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
 import seqair from "github.com/sstadick/goose-seqair@v0.1.0";
 import seqair.bam;
@@ -46,6 +48,7 @@ struct Options {
 struct Config {
     reads: u8[], index: u8[], reference: u8[], filters: perbase::Filters,
     mate_mode: i64, keep_zeros: bool, coordinate_base: i64, max_depth: i64, cache_size: i64,
+    depth: only_depth::Mode,
 }
 struct Job { id: i64, tid: i32, begin: i64, end: i64 }
 struct Result { id: i64, data: u8[] }
@@ -87,10 +90,19 @@ thread_fn worker(config: Config) {
     let has_reference = config.reference.len > 0;
     if has_reference { check(reference.open(config.reference) == faidx::Status.Ok, "cannot open indexed FASTA"); }
     let store = pileup::Store { .. }; let mates = perbase::MateCounter { .. }; let cache = ReferenceCache { .. };
+    let depth = only_depth::Counter { .. }; let changed = bitvec::BitVec { .. };
     var text: u8[>..] = []; var bases: u8[>..] = []; var admitted: bool[>..] = []; var selected: pileup::Entry[>..] = [];
     loop {
         let job = qget<Job>(); if job.id < 0 { break; }
         text.clear();
+        if config.depth.enabled {
+            check(depth.load(changed, reader, index, job.tid, job.begin, job.end, config.filters.include_flags,
+                config.filters.exclude_flags, config.filters.min_mapq, config.mate_mode > 0, config.depth.fast) == bam::Status.Record,
+                "cannot read indexed BAM region");
+            let ref = reader.references[job.tid as i64]; let name = reader.names[ref.name..ref.name + ref.name_len];
+            depth.write(changed, text, name, job.begin, config.coordinate_base, config.depth, config.keep_zeros);
+            check(qput(Result { id: job.id, data: text[..] }), "result queue full"); continue;
+        }
         check(store.load_indexed(reader, index, job.tid, job.begin, job.end, pileup::Filter { exclude_flags: 0, min_mapq: 0, retain_zero_span: true }) == bam::Status.Record,
             "cannot load BAM region (invalid, unsorted, or region exceeds slab limit)");
         let restricted = perbase::admit(store, min(config.max_depth, 2147483647), admitted);
@@ -129,9 +141,25 @@ thread_fn worker(config: Config) {
 fn main() {
     let argv = args();
     if argv.len < 2 || argv[1] == "--help" || argv[1] == "-h" {
-        write_stdout("Usage: goose-perbase base-depth [OPTIONS] <reads.bam>\n"); return;
+        write_stdout("Usage: goose-perbase <base-depth|only-depth> [OPTIONS] <reads.bam>\n"); return;
     }
-    if argv[1] != "base-depth" { fail("only base-depth is supported"); }
+    if argv[1] == "only-depth" {
+        if argv.len == 2 { write_stdout(opts::help<only_depth::Options>("goose-perbase only-depth")); return; }
+        let d, help, error = opts::parse<only_depth::Options>(argv[2..]);
+        if error.len != 0 { fail(error); }
+        if help { write_stdout(opts::help<only_depth::Options>("goose-perbase only-depth")); return; }
+        check(!d.mate_fix.value || !d.fast_mode.value, "mate-fix conflicts with fast-mode");
+        let common = Options {
+            reads: copy(d.reads), output: copy(d.output), ref_fasta: copy(d.ref_fasta),
+            bed_file: copy(d.bed_file), bcf_file: copy(d.bcf_file), bgzip: copy(d.bgzip),
+            compression_threads: copy(d.compression_threads), compression_level: copy(d.compression_level),
+            threads: copy(d.threads), chunksize: copy(d.chunksize), channel_size_modifier: copy(d.channel_size_modifier),
+            include_flags: copy(d.include_flags), exclude_flags: copy(d.exclude_flags),
+            mate_fix: copy(d.mate_fix), skip_merging_intervals: copy(d.skip_merging_intervals),
+            min_mapq: copy(d.min_mapq), keep_zeros: copy(d.keep_zeros), zero_base: copy(d.zero_base), .. };
+        run(common, only_depth::Mode { enabled: true, fast: d.fast_mode.value, no_merge: d.no_merge.value, bed: d.bed_format.value }); return;
+    }
+    if argv[1] != "base-depth" { fail("expected base-depth or only-depth"); }
     if argv.len == 2 { write_stdout(opts::help<Options>("goose-perbase base-depth")); return; }
     let options, help, error = opts::parse<Options>(argv[2..]);
     if error.len != 0 { fail(error); }
@@ -139,7 +167,7 @@ fn main() {
     run(options);
 }
 
-fn run(options: const Options&) {
+fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. }) {
     check(options.threads.value > 0 && options.compression_threads.value > 0, "thread counts must be positive");
     check(options.chunksize.value > 0 && options.chunksize.value <= 4294967295, "invalid chunksize");
     check(options.max_depth.value >= 0 && options.max_depth.value <= 4294967295, "invalid max-depth");
@@ -171,7 +199,7 @@ fn run(options: const Options&) {
         filters: perbase::Filters { include_flags: options.include_flags.value as u16, exclude_flags: options.exclude_flags.value as u16,
             min_mapq: options.min_mapq.value as u8, min_base_quality: options.min_base_quality_score.value as u8 },
         mate_mode: if options.mate_fix.value { mode } else { 0 }, keep_zeros: options.keep_zeros.value,
-        coordinate_base: if options.zero_base.value { 0 } else { 1 }, max_depth: options.max_depth.value, cache_size: options.ref_cache_size.value };
+        coordinate_base: if options.zero_base.value { 0 } else { 1 }, max_depth: options.max_depth.value, cache_size: options.ref_cache_size.value, depth: depth };
     var intervals: regions::Interval[>..] = [];
     if options.bed_file.value.len > 0 { regions::read(options.bed_file.value, false, reader, intervals); }
     if options.bcf_file.value.len > 0 { regions::read(options.bcf_file.value, true, reader, intervals); }
@@ -205,7 +233,9 @@ fn run(options: const Options&) {
     }
     // Bounded batches preserve interval order regardless of completion order.
     // The channel knob controls scheduling, not the size of BAM/reference slabs.
-    let estimate = max(1, options.chunksize.value * (longest_name + 64));
+    // Run-length output has no fixed rows/base ratio. Use a 64 KiB scheduling
+    // unit for only-depth; this is a concurrency hint, not a memory ceiling.
+    let estimate = if depth.enabled { 65536 } else { max(1, options.chunksize.value * (longest_name + 64)) };
     let budget = modifier * 1000000000.0 * workers as f64;
     let window = min(workers, max(1, (min(budget / estimate as f64, workers as f64)) as i64));
     qlimit<Job>(workers); qlimit<Result>(workers);
@@ -224,7 +254,12 @@ fn run(options: const Options&) {
         }
         for i in n {
             if sizes[i] > 0 {
-                if !started { var text: u8[>..] = []; header(text, config.reference.len > 0); sink.write(text); started = true; }
+                if !started {
+                    var text: u8[>..] = [];
+                    if depth.enabled { if !depth.bed { text.append("REF\tPOS\tEND\tDEPTH\n"); } }
+                    else { header(text, config.reference.len > 0); }
+                    sink.write(text); started = true;
+                }
                 sink.write(received[offsets[i]..offsets[i] + sizes[i]]);
             }
         }

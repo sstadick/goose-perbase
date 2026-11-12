@@ -1,4 +1,4 @@
-"""Alternate whole-process base-depth runs, validating every TSV before reporting speed."""
+"""Alternate whole-process Perbase runs, validating every TSV before reporting speed."""
 import argparse
 import gzip
 import hashlib
@@ -28,8 +28,9 @@ def main():
     p.add_argument("--cpu", type=int)
     p.add_argument("--cpus", help="Comma-separated logical CPUs for a parallel comparison")
     p.add_argument("--threads", type=int, default=1)
+    p.add_argument("--command", choices=("base-depth", "only-depth"), default="base-depth")
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="Common additional base-depth arguments")
+    p.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="Common additional subcommand arguments")
     args = p.parse_args()
     if args.rounds < 1: p.error("rounds must be positive")
     if args.threads < 1: p.error("threads must be positive")
@@ -40,7 +41,7 @@ def main():
     report = {"platform": platform.platform(), "affinity": sorted(os.sched_getaffinity(0)),
               "clang": subprocess.check_output(["clang", "--version"], text=True).splitlines()[0],
               "input_sha256": digest(args.bam), "input_bytes": args.bam.stat().st_size,
-              "rounds": args.rounds, "threads_flag": args.threads, "extra_flags": args.extra, "native_flags": "-O3 -march=native",
+              "rounds": args.rounds, "command": args.command, "threads_flag": args.threads, "extra_flags": args.extra, "native_flags": "-O3 -march=native",
               "note": "Build both binaries with documented flags first. This runner does not establish external binary provenance.",
               "results": {}}
     report["source_sha256"] = {path.name: digest(path) for path in sorted(ROOT.glob("*.goose"))}
@@ -54,7 +55,7 @@ def main():
         for round_ in range(args.rounds + 1):
             for name in programs if round_ % 2 == 0 else reversed(programs):
                 output = directory / f"{name}.tsv"; memory = directory / f"{name}.rss"
-                command = [str(programs[name]), "base-depth", str(args.bam.resolve()), "-t", str(args.threads), "-c", "1000000", "-o", str(output), *args.extra]
+                command = [str(programs[name]), args.command, str(args.bam.resolve()), "-t", str(args.threads), "-c", "1000000", "-o", str(output), *args.extra]
                 report.setdefault("commands", {})[name] = command
                 start = time.perf_counter_ns()
                 subprocess.run(["/usr/bin/time", "-f", "%M", "-o", str(memory), *command],

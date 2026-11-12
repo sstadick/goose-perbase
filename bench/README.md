@@ -1,6 +1,107 @@
-# Base-depth benchmarks
+# Perbase benchmarks
 
-## Current comparison: Perbase v1.4.1
+## Only-depth: Perbase v1.4.1
+
+Clang native flags, Rust v1.4.1 build and eight-core affinity are as documented
+below. Three measured whole-process runs follow one warmup, alternating program
+order. All outputs are uncompressed files under `/srv`, including flush/close
+but not `fsync`; **every timed result matches Rust byte-for-byte by SHA-256**.
+Times are medians; memory is the highest measured RSS.
+
+### Scaling after sparse counter resets
+
+Paper chr20 10 Mb subset: 2,241,960 records, 109,209,558 compressed bytes.
+`-t 1`, `4`, `6` and `8` use one, two, four and six workers respectively.
+
+| Mode | Goose seconds | Rust seconds | Rust/Goose | Goose MiB | Rust MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| [Default, `-t 1`](results/only-depth-scaled-paper-t1.json) | 1.089 | 5.339 | **4.90×** | 63.1 | 64.1 |
+| [Default, `-t 4`](results/only-depth-scaled-paper-t4.json) | 0.684 | 2.904 | **4.25×** | 104.8 | 98.0 |
+| [Default, `-t 6`](results/only-depth-scaled-paper-t6.json) | 0.583 | 2.130 | **3.65×** | 198.4 | 180.5 |
+| [Default, `-t 8`](results/only-depth-scaled-paper-t8.json) | 0.581 | 2.286 | **3.94×** | 269.2 | 238.0 |
+| [Mate fixing, `-t 8 -m`](results/only-depth-scaled-paper-mates-t8.json) | 0.590 | 2.224 | **3.77×** | 264.3 | 219.0 |
+| [Fast mode, `-t 8 -x`](results/only-depth-scaled-paper-fast-t8.json) | 0.574 | 2.232 | **3.89×** | 269.8 | 248.2 |
+
+Six workers now give **1.87×** the single-worker throughput. Four and six workers
+are effectively tied on this small input: this is not linear scaling.
+
+A larger control contains **all of chr20**, 15,914,230 records and 852,385,270
+compressed bytes, retaining the original header. It emits 551,523,443 TSV bytes.
+
+| Mode | Goose seconds | Rust seconds | Rust/Goose | Goose MiB | Rust MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| [Default, `-t 1`](results/only-depth-scaled-chr20-t1.json) | 6.673 | 16.229 | **2.43×** | 69.1 | 66.6 |
+| [Default, `-t 8`](results/only-depth-scaled-chr20-t8.json) | 2.328 | 7.362 | **3.16×** | 285.3 | 375.4 |
+
+Six workers give **2.87×** the single-worker throughput on this larger input.
+Rust's six-worker samples vary from 5.48 to 7.70 seconds, so the three-run median
+ratio is not a precise universal speedup. Both programs use the same eight-core
+affinity and defaults. The full 35 GiB whole-genome BAM remains unmeasured.
+
+### What removed the regression
+
+The 10 Mb subset retains the full reference dictionary, generating 6,494 jobs.
+Stage timing showed that the populated jobs took similar time with one and six
+workers; the slowdown accumulated in empty jobs. Each fetch cleared its whole
+64-bit counter array, including empty regions. Workers now clear only endpoints
+marked by the preceding fetch's bit vector, before resizing for the next fetch.
+Newly grown storage is still initialized to zero. No scheduler, native runtime,
+dependency or thread-count change was needed.
+
+The original six-worker result was slower than one worker. Retained before
+reports make the improvement and matching output hashes inspectable:
+
+| Mode | Before Goose seconds | After Goose seconds |
+| --- | ---: | ---: |
+| [Default, `-t 1`](results/only-depth-paper-t1.json) | 1.380 | 1.089 |
+| [Default, `-t 8`](results/only-depth-paper-t8.json) | 2.045 | 0.581 |
+| [Mate fixing, `-t 8 -m`](results/only-depth-paper-mates-t8.json) | 2.066 | 0.590 |
+| [Fast mode, `-t 8 -x`](results/only-depth-paper-fast-t8.json) | 2.017 | 0.574 |
+
+This is **3.52× faster than the previous six-worker implementation**, not 3.52×
+parallel scaling. The ordered batch scheduler and copied output buffers remain;
+these measurements do not isolate the remaining scaling limits. A CLI regression
+case checks long → short empty → longer fetches through one reused worker, against
+independently computed coverage. The complete differential suite passes both
+normally and with Goose bounds checks plus ASan/UBSan. A checked six-worker run
+on the 10 Mb paper subset also matches the Rust output hash.
+
+Default output is 83,935,154 bytes, mate-fixed output 81,594,408 bytes, and fast
+output 83,984,748 bytes on the 10 Mb subset. The program uses released Seqair
+v0.1.0, bio v0.3.1, I/O v0.3.0 and bitvec v0.1.0. JSON includes binary/source
+hashes and all samples.
+The [bit-vector microbenchmark](https://github.com/sstadick/goose-bitvec/tree/main/bench)
+measures enumeration separately; these application timings do not isolate the
+bit vector's contribution.
+
+```sh
+export TMPDIR=/srv/goose-perbase
+export PERBASE=/srv/goose-perbase/rust-current-target/release/perbase
+for threads in 1 4 6 8; do
+  python3 bench/run.py "$TMPDIR/paper-chr20-10mb.bam" --command only-depth \
+    --perbase "$PERBASE" --cpus 0,1,2,3,4,5,6,7 --threads "$threads" \
+    --rounds 3 --output "$TMPDIR/only-depth-t${threads}.json"
+done
+python3 bench/run.py "$TMPDIR/paper-chr20-10mb.bam" --command only-depth \
+  --perbase "$PERBASE" --cpus 0,1,2,3,4,5,6,7 --threads 8 \
+  --rounds 3 --output "$TMPDIR/only-depth-mates.json" --extra -m
+python3 bench/run.py "$TMPDIR/paper-chr20-10mb.bam" --command only-depth \
+  --perbase "$PERBASE" --cpus 0,1,2,3,4,5,6,7 --threads 8 \
+  --rounds 3 --output "$TMPDIR/only-depth-fast.json" --extra -x
+
+# Use the pysam environment from the README's Validate section.
+export PYTHON=.ci/venv/bin/python
+# Extraction is outside timing; skip if this subset already exists.
+"$PYTHON" bench/subset.py ../perbase/paper/data/HG00157.final.bam \
+  "$TMPDIR/paper-chr20-full.bam" chr20 0 64444167
+for threads in 1 8; do
+  python3 bench/run.py "$TMPDIR/paper-chr20-full.bam" --command only-depth \
+    --perbase "$PERBASE" --cpus 0,1,2,3,4,5,6,7 --threads "$threads" \
+    --rounds 3 --output "$TMPDIR/only-depth-chr20-t${threads}.json"
+done
+```
+
+## Base-depth comparison: Perbase v1.4.1
 
 The expanded CLI is compared against Rust Perbase
 [`213e774`](https://github.com/sstadick/perbase/commit/213e77439b2c216662528c5eebfff2d18492d025)

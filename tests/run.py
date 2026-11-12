@@ -74,8 +74,8 @@ def main():
     env = dict(os.environ, RUST_LOG="error")
     with tempfile.TemporaryDirectory(prefix="goose-perbase-tests-") as t:
         directory = Path(t); bam = directory / "input.bam"
-        def run(exe, *flags, ok=True, path=bam, threads=1):
-            result = subprocess.run([str(exe.resolve()), "base-depth", str(path), "-t", str(threads), *map(str, flags)], capture_output=True, env=env, timeout=60)
+        def run(exe, *flags, ok=True, path=bam, threads=1, command="base-depth"):
+            result = subprocess.run([str(exe.resolve()), command, str(path), "-t", str(threads), *map(str, flags)], capture_output=True, env=env, timeout=60)
             assert (result.returncode == 0) == ok, (exe, flags, result.stderr.decode())
             return result.stdout
         cases = [([], {}), (["-z"], {"zero": True}), (["-k"], {"zeros": True}),
@@ -115,6 +115,8 @@ def main():
         assert run(args.goose, "-D", 199) == run(args.perbase, "-D", 199)
 
         def save(records, header):
+            # Do not let HTSlib prefer a stale CSI after replacing the BAM.
+            Path(str(bam) + ".csi").unlink(missing_ok=True)
             with pysam.AlignmentFile(bam, "wb", header=header) as out:
                 for record in sorted(records, key=lambda r: (r.reference_id, r.reference_start)): out.write(record)
             pysam.index(str(bam))
@@ -211,8 +213,84 @@ def main():
         if Path("/dev/full").exists():
             run(args.goose, "-k", "-o", "/dev/full", ok=False)
             run(args.goose, "-k", "-Z", "-o", "/dev/full", ok=False)
+
+        # only-depth: independent dense coverage oracle plus exact Rust ranges.
+        def depth(exe, *flags, **kwargs):
+            return run(exe, *flags, command="only-depth", **kwargs)
+
+        for seed in (19, 47, 193):
+            header, records = fixture(bam, seed)
+            for fast in (False, True):
+                counts = [[0] * ref["LN"] for ref in header["SQ"]]
+                for r in records:
+                    if r.flag & 256 or r.mapping_quality < 20: continue
+                    pos = r.reference_start
+                    for op, n in r.cigartuples:
+                        if op in (0, 2, 3, 7, 8):
+                            if op != 3 or fast:
+                                for p in range(pos, pos + n): counts[r.reference_id][p] += 1
+                            pos += n
+                oracle = "REF\tPOS\tEND\tDEPTH\n" + "".join(
+                    f'{ref["SN"]}\t{p}\t{p+1}\t{n}\n'
+                    for ref, values in zip(header["SQ"], counts) for p, n in enumerate(values))
+                flags = ["-n", "-k", "-z", "-F", 256, "-q", 20, *(["-x"] if fast else [])]
+                assert depth(args.perbase, *flags) == oracle.encode(), ("depth oracle", seed, fast)
+                assert depth(args.goose, *flags, "-c", 7, threads=6) == oracle.encode()
+            # Genuine overlapping mates, including supplementary alignments and
+            # long split reads. The eligibility heuristic is per record.
+            for i, r in enumerate(records):
+                r.query_name = f"mate-{r.reference_id}-{i // 3}"
+                r.flag |= 1 | (64 if i % 2 else 128)
+                r.next_reference_id = r.reference_id if i % 7 else 1 - r.reference_id
+                r.next_reference_start = 10; r.template_length = -9 if i % 2 else 9
+            save(records, header)
+            for flags in ([], ["-x"], ["-n"], ["-n", "-k"], ["--bed-format", "-z"],
+                          ["-m"], ["-m", "-n", "-F", 256, "-q", 20], ["-r", fasta],
+                          ["-b", bed, "-M"], ["-B", bcf], ["-b", bed, "-B", compressed_vcf, "-M", "-m"]):
+                for chunk, threads in ((7, 1), (7, 6), (1000000, 1)):
+                    common = [*flags, "-c", chunk]
+                    assert depth(args.goose, *common, threads=threads) == depth(args.perbase, *common, threads=threads), ("only-depth", seed, common, threads)
+
+        # Reusing counters across long, short empty, then longer fetches must
+        # clear old endpoints before shrinking and never resurrect stale depth.
+        reuse_header = {"HD": {"SO": "coordinate"}, "SQ": [
+            {"SN": "long", "LN": 129}, {"SN": "empty", "LN": 17}, {"SN": "longer", "LN": 150}]}
+        reuse_records = []
+        for tid, start, length in ((0, 96, 20), (2, 3, 4)):
+            r = pysam.AlignedSegment(); r.query_name = f"reuse-{tid}"
+            r.reference_id = tid; r.reference_start = start; r.cigarstring = f"{length}M"
+            r.query_sequence = "A" * length; r.mapping_quality = 60; reuse_records.append(r)
+        save(reuse_records, reuse_header)
+        oracle = ("REF\tPOS\tEND\tDEPTH\n" + "".join(
+            f'{ref["SN"]}\t{p}\t{p+1}\t{int((tid == 0 and 96 <= p < 116) or (tid == 2 and 3 <= p < 7))}\n'
+            for tid, ref in enumerate(reuse_header["SQ"]) for p in range(ref["LN"]))).encode()
+        for exe in (args.goose, args.perbase):
+            assert depth(exe, "-n", "-k", "-z", threads=1) == oracle
+
+        # Empty/quoted contigs still produce merged zero runs without -k.
+        save([], quoted_header)
+        for flags in ([], ["-n"], ["-n", "-k"], ["--bed-format", "-z"]):
+            assert depth(args.goose, *flags) == depth(args.perbase, *flags)
+        header, records = fixture(bam)
+        records[0].query_sequence = None
+        records[1].cigarstring = "1I"; records[1].query_sequence = "A"
+        save(records, header)
+        for flags in ([], ["-x"], ["-m"], ["-n", "-k"]):
+            assert depth(args.goose, *flags) == depth(args.perbase, *flags), ("depth missing SEQ/zero span", flags)
+        pysam.index("-c", str(bam)); Path(str(bam) + ".bai").unlink()
+        assert depth(args.goose) == depth(args.perbase)
+        pysam.index(str(bam))
+        for flags in (["-m", "-x"], ["-D", 1], ["-Q", 20], ["-t", 0], ["-c", 0]):
+            depth(args.goose, *flags, ok=False)
+        header["SQ"][0]["LN"] = 30000; save([], header)
+        plain = depth(args.perbase, "-n", "-k")
+        packed = depth(args.goose, "-n", "-k", "-Z", "-T", 4, "-L", 2, "-c", 197, threads=6)
+        assert gzip.decompress(packed) == plain
+        assert depth(args.goose, "-n", "-k", "-o", output) == b"" and output.read_bytes() == plain
+        if Path("/dev/full").exists(): depth(args.goose, "-n", "-k", "-o", "/dev/full", ok=False)
+        Path(str(bam) + ".csi").unlink(missing_ok=True)
         Path(str(bam) + ".bai").unlink(); run(args.goose, ok=False)
-    print("PASS: independent CIGAR oracle; Rust Perbase parity for threads, all mate strategies, BED/VCF/BCF, depth caps, FASTA/zeros, missing SEQ, BGZF and I/O")
+    print("PASS: independent CIGAR/depth oracles; Rust Perbase base-depth and only-depth parity for options, workers, mates, intervals, missing SEQ, BGZF and I/O")
 
 
 if __name__ == "__main__": main()

@@ -1,0 +1,46 @@
+{
+  "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+  "affinity": [
+    4
+  ],
+  "clang": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+  "input_sha256": "4cfd04d7ea7ee6c66ee45e3a44722f42a6d84b4c4578eda8ed12ce3a1ac7c843",
+  "input_bytes": 18184667,
+  "rounds": 7,
+  "threads_flag": 1,
+  "native_flags": "-O3 -march=native",
+  "note": "Build both binaries with documented flags first. This runner does not establish external binary provenance.",
+  "results": {
+    "goose": {
+      "binary_sha256": "fbff58ba4ca71e78d8dc2e5d9ca7aa463bd035aa517abc5d486e03a9e9d24e82",
+      "samples_seconds": [
+        0.519825082,
+        0.512633943,
+        0.51426801,
+        0.512199197,
+        0.520167864,
+        0.52075786,
+        0.533315276
+      ],
+      "median_seconds": 0.519825082,
+      "peak_rss_kib": 165120
+    },
+    "rust": {
+      "binary_sha256": "9f5a8b3c34f6d535ce1254c0b7d94e2545988a2aebfcc3e6ccf89f731b507fb0",
+      "samples_seconds": [
+        10.371889101,
+        10.233515498,
+        10.124210227,
+        10.197991643,
+        10.222819343,
+        10.279158607,
+        10.37351962
+      ],
+      "median_seconds": 10.233515498,
+      "peak_rss_kib": 351504
+    }
+  },
+  "output_bytes": 45168706,
+  "output_sha256": "88392bbb78eb486b8fad22e925b903918d9fcf8fcea0d51112b7afc1dde6516b",
+  "speedup": 19.68645964259185
+}

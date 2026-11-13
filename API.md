@@ -12,18 +12,25 @@
 
 ## `perbase::Filters`
 
-[source](perbase.goose#L30-L33)
+[source](perbase.goose#L46-L51)
 
 ```goose
 struct Filters {
-    include_flags: u16 = 0, exclude_flags: u16 = 0,
-    min_mapq: u8 = 0, min_base_quality: u8 = 0,
+    include_flags:    u16 = 0,
+    exclude_flags:    u16 = 0,
+    min_mapq:         u8  = 0,
+    min_base_quality: u8  = 0,
 }
 ```
 
-Apply read filters at the column, not at loading: rejected reads contribute
-to FAIL. Defaults match Perbase, not goose-seqair's default exclusion mask.
-A base below min_base_quality counts as N without reducing depth.
+Rules for counting reads at a reference position. include_flags requires
+every specified SAM flag bit; exclude_flags rejects any specified bit.
+min_mapq is the minimum read mapping quality. Defaults accept all flag and
+mapping-quality values, matching Rust Perbase.
+
+Keep rejected reads when loading the region: counting records them in FAIL
+rather than DEPTH. min_base_quality is different: a passing read with a base
+below this quality contributes N and still contributes to DEPTH.
 
 ```goose
 let options = perbase::Filters { .. };
@@ -34,16 +41,23 @@ assert(options.exclude_flags == 0 && options.min_base_quality == 0);
 
 ## `perbase::Counts`
 
-[source](perbase.goose#L44-L44)
+[source](perbase.goose#L67-L69)
 
 ```goose
-struct Counts { values: i64[17] = [0; 17] }
+struct Counts {
+    values: i64[17] = [0; 17],
+}
 ```
 
-The 17 numeric columns after POS (or REF_BASE), in Perbase TSV order.
-Deletions contribute to DEPTH; reference skips do not. INS counts events,
-not inserted bases. IUPAC ambiguity codes in reads count as N, like Perbase.
-The final counter counts passing query-name groups with multiple alignments.
+Counts for one reference position, in output-column order:
+DEPTH, A, C, G, T, N, R, Y, S, W, K, M, INS, DEL, REF_SKIP, FAIL,
+COUNT_OF_MATE_RESOLUTIONS. values[0] is DEPTH and values[16] is the number
+of passing read-name groups where multiple alignments were resolved.
+
+CIGAR deletions contribute to DEPTH and DEL. Reference skips, such as introns,
+contribute to REF_SKIP but not DEPTH. INS counts insertion events anchored
+after this position, not the number of inserted bases. Ambiguous bases in
+input reads count as N; mate resolution can produce the R/Y/S/W/K/M counts.
 
 ```goose
 let row = perbase::Counts { .. };
@@ -54,15 +68,24 @@ assert(row.values[0] == 0 && row.values[16] == 0);
 
 ## `perbase::count`
 
-[source](perbase.goose#L55-L61)
+[source](perbase.goose#L85-L95)
 
 ```goose
-fn count(store: const pileup::Store&, entries: const pileup::Entry[:], filters: Filters) -> Counts
+fn count(
+    store:   const pileup::Store&,
+    entries: const pileup::Entry[:],
+    filters: Filters,
+) -> Counts
 ```
 
-Count a raw column using its store's metadata. Entries borrow the store;
-the returned counters own no input views. Missing quality 255 is compared
-numerically, matching Perbase's behavior rather than inventing a cutoff.
+Count one reference position without combining overlapping mates.
+Pass the entries supplied by store.columns() and the same store that
+produced them. Each entry identifies one read and its base, deletion, or
+reference skip at this position. The returned Counts owns only numbers
+and remains valid after the store is reused.
+
+Missing BAM base qualities are represented by 255. That value participates
+in the ordinary numeric quality comparison, matching Rust Perbase.
 
 ```goose
 let store = pileup::Store { .. };
@@ -74,19 +97,28 @@ assert(row.values[0] == 0);
 
 ## `perbase::count`
 
-[source](perbase.goose#L161-L192)
+[source](perbase.goose#L270-L326)
 
 ```goose
-fn count(counter: MateCounter&, store: const pileup::Store&, entries: const pileup::Entry[:], filters: Filters, mode: i64) -> Counts
+fn count(
+    counter: MateCounter&,
+    store:   const pileup::Store&,
+    entries: const pileup::Entry[:],
+    filters: Filters,
+    mode:    i64,
+) -> Counts
 ```
 
-Resolve query-name groups before counting. Call counter.prepare(store) once
-after each region load, then reuse it across that store's columns. Mode is a
-positive value returned by strategy(); input entries must belong to store.
+Count one reference position after resolving alignments with the same read
+name. Call counter.prepare(store) after each region load, then use this
+overload for the entries from store.columns(). All entries must come from
+that same store. mode selects the resolution rule and must be a positive
+value returned by strategy(), for example strategy("Original").
 
 ```goose
 let store = pileup::Store { .. };
-let counter = perbase::MateCounter { .. }; counter.prepare(store);
+let counter = perbase::MateCounter { .. };
+counter.prepare(store);
 let row = counter.count(store, [], perbase::Filters { .. }, perbase::strategy("Original"));
 assert(row.values[0] == 0 && row.values[16] == 0);
 ```
@@ -95,16 +127,20 @@ assert(row.values[0] == 0 && row.values[16] == 0);
 
 ## `perbase::append_row`
 
-[source](perbase.goose#L238-L251)
+[source](perbase.goose#L397-L428)
 
 ```goose
-fn append_row(output: u8[>..]&, name: const u8[:], position: i64, reference: u8,
-              row: Counts, near_max: bool)
+fn append_row(
+    output: u8[>..]&, name: const u8[:], position: i64, reference: u8,
+    row:    Counts, near_max: bool,
+)
 ```
 
-Append a TSV row, quoting reference names as CSV with a tab delimiter.
-Position is already in the requested coordinate base; reference=0 omits
-REF_BASE. The caller controls buffering and I/O.
+Append one tab-separated output row and a newline. Quote reference names
+containing tabs, newlines or quotes, doubling any quote inside the name.
+position must already use the desired zero- or one-based coordinates.
+reference is the reference-base character; zero omits the REF_BASE column.
+This only appends bytes to output; the caller writes or flushes them.
 
 ```goose
 var text: u8[>..] = [];

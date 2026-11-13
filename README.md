@@ -14,7 +14,7 @@ kernels supplied by its dependencies. No Rust or HTSlib runtime is needed.
 
 Requires Goose, Python 3.11+, Clang, and CMake 3.20+. Tested with Goose
 [`74c641c5`](https://github.com/aardappel/goose/commit/74c641c5ac6d762e57e3177678fe9dea414d042a)
-and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.3.1
+and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.4.0
 (CRAI-indexed CRAM), goose-bio v0.4.1 (plain/BGZF indexed FASTA), goose-bgzf
 v0.1.2, goose-io v0.3.0 and goose-bitvec v0.1.0. Goose downloads these dependencies automatically;
 no sibling library checkout is needed. CI checks Linux x86-64 and ARM64 against

@@ -55,7 +55,7 @@ def main():
               "results": {}}
     report["source_sha256"] = {path.name: digest(path) for path in sorted(ROOT.glob("*.goose"))}
     packages = Path(os.environ.get("GOOSE_HOME", Path.home() / ".goose")) / "pkg/github.com/sstadick"
-    report["seqair_source_sha256"] = {name: digest(packages / "goose-seqair/v0.3.1" / name)
+    report["seqair_source_sha256"] = {name: digest(packages / "goose-seqair/v0.4.0" / name)
                                       for name in ("pileup.goose", "cram.goose", "cram_index.goose", "src/cram.c")}
     report["bio_source_sha256"] = {"faidx.goose": digest(packages / "goose-bio/v0.4.1/faidx.goose")}
     rust_extra = args.extra.copy()

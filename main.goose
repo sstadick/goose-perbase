@@ -9,7 +9,7 @@ import merge_adjacent;
 import alignment;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
-import seqair from "github.com/sstadick/goose-seqair@v0.3.1";
+import seqair from "github.com/sstadick/goose-seqair@v0.4.0";
 import seqair.bam;
 import seqair.bam_index;
 import seqair.pileup;
@@ -139,7 +139,7 @@ thread_fn worker(config: Config, stream: u64, window: i64) {
     let reader = alignment::Header { .. };
     let bam_cursor = alignment::BamCursor { .. };
     let source = alignment::Reference { reader: reference };
-    check(reader.open(bam_reader, index, cram_reader, crai, reference, config.reads, config.index, config.reference) == bam::Status.Record, "cannot open indexed alignment or reference");
+    check(reader.open(bam_reader, index, cram_reader, crai, reference, config.reads, config.index, config.reference) == bam::Status.Ok, "cannot open indexed alignment or reference");
     let has_reference = config.reference.len > 0;
     // Counting never reads auxiliary tags or Seqair's primary-pair links.
     // Mate resolution below groups all same-name reads using its own rules.
@@ -172,7 +172,7 @@ thread_fn worker(config: Config, stream: u64, window: i64) {
                 depth.load(changed, bam_reader, index, bam_cursor, source, job.tid, job.begin, job.end, config.filters.include_flags,
                     config.filters.exclude_flags, config.filters.min_mapq, config.mate_mode > 0, config.depth.fast)
             };
-            check(status == bam::Status.Record, "cannot read indexed alignment region (check reference for CRAM)");
+            check(status == bam::Status.Ok, "cannot read indexed alignment region (check reference for CRAM)");
             let ref = reader.references[job.tid as i64];
             let name = reader.names[ref.name..ref.name + ref.name_len];
             depth.write(changed, text, name, job.begin, config.coordinate_base, config.depth, config.keep_zeros) {
@@ -184,7 +184,7 @@ thread_fn worker(config: Config, stream: u64, window: i64) {
         let status = if reader.is_cram { alignment::load(store, cram_reader, crai, cursor, source, job.tid, job.begin, job.end) }
             else { store.load_indexed(bam_reader, index, job.tid, job.begin, job.end,
                 pileup::Filter { exclude_flags: 0, min_mapq: 0, retain_zero_span: true }) };
-        check(status == bam::Status.Record, "cannot load alignment region (reference, invalid data, sorting, or size limit; --max-region-bytes controls retained payload)");
+        check(status == bam::Status.Ok, "cannot load alignment region (reference, invalid data, sorting, or size limit; --max-region-bytes controls retained payload)");
         let restricted = perbase::admit(store, min(config.max_depth, 2147483647), admitted);
         if config.mate_mode > 0 {
             mates.prepare(store);
@@ -344,7 +344,7 @@ fn run(options: const Options&, depth: only_depth::Mode = only_depth::Mode { .. 
     defer cram_reader.close();
     defer reference.close();
     let reader = alignment::Header { .. };
-    check(reader.open(bam_reader, index, cram_reader, crai, reference, options.reads.value, "", options.ref_fasta.value) == bam::Status.Record, "cannot open indexed alignment or reference");
+    check(reader.open(bam_reader, index, cram_reader, crai, reference, options.reads.value, "", options.ref_fasta.value) == bam::Status.Ok, "cannot open indexed alignment or reference");
     let workers = max(1, min(options.threads.value, hardware_threads()) - 2);
     let config = Config {
         reads:     options.reads.value,

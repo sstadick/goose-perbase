@@ -2,7 +2,7 @@
 namespace alignment;
 import std;
 import os;
-import seqair from "github.com/sstadick/goose-seqair@v0.3.1";
+import seqair from "github.com/sstadick/goose-seqair@v0.4.0";
 import seqair.bam;
 import seqair.bam_index;
 import seqair.pileup;
@@ -41,10 +41,10 @@ fn open(reader: Header&, bam_reader: bam::Reader&, index: bam_index::Index&,
     var magic: u8[4] = [0; 4]; let n = io::read(file, magic); io::close(file);
     reader.is_cram = n == 4 && magic == "CRAM";
     if reader.is_cram {
-        reader.status = cram_reader.open(path); if reader.status != bam::Status.Record { return reader.status; }
+        reader.status = cram_reader.open(path); if reader.status != bam::Status.Ok { return reader.status; }
         reader.references.append(cram_reader.references); reader.names.append(cram_reader.names);
     } else {
-        reader.status = bam_reader.open(path); if reader.status != bam::Status.Record { return reader.status; }
+        reader.status = bam_reader.open(path); if reader.status != bam::Status.Ok { return reader.status; }
         reader.references.append(bam_reader.references); reader.names.append(bam_reader.names);
     }
     if index_path.len > 0 { reader.index_path.append(index_path); }
@@ -68,9 +68,9 @@ fn open(reader: Header&, bam_reader: bam::Reader&, index: bam_index::Index&,
         for entry in crai.entries { if entry.tid >= reader.references.len { reader.status = bam::Status.Invalid; } }
     } else {
         reader.status = index.open(reader.index_path);
-        if reader.status == bam::Status.Record && index.references.len != reader.references.len { reader.status = bam::Status.Invalid; }
+        if reader.status == bam::Status.Ok && index.references.len != reader.references.len { reader.status = bam::Status.Invalid; }
     }
-    if reader.status == bam::Status.Record && reference_path.len > 0 && reference.open(reference_path) != faidx::Status.Ok { reader.status = bam::Status.Invalid; }
+    if reader.status == bam::Status.Ok && reference_path.len > 0 && reference.open(reference_path) != faidx::Status.Ok { reader.status = bam::Status.Invalid; }
     reader.status
 }
 
@@ -83,12 +83,15 @@ fn fetch(reader: bam::Reader&, index: bam_index::Index&, cursor: BamCursor&, tid
 }
 
 fn read(reader: bam::Reader&, cursor: BamCursor&, source: Reference&) -> bam::Status {
-    if cursor.status != bam::Status.Record { return cursor.status; }
+    if cursor.status == bam::Status.Record {
+        cursor.status = bam::Status.Ok;
+    }
+    if cursor.status != bam::Status.Ok { return cursor.status; }
     while cursor.chunk < cursor.chunks.len {
         let chunk = cursor.chunks[cursor.chunk];
         if !cursor.active {
             cursor.status = reader.seek(chunk.begin);
-            if cursor.status != bam::Status.Record { return cursor.status; } cursor.active = true;
+            if cursor.status != bam::Status.Ok { return cursor.status; } cursor.active = true;
         }
         if reader.tell() >= chunk.end { cursor.chunk += 1; cursor.active = false; continue; }
         cursor.status = reader.read();
@@ -119,11 +122,12 @@ fn load(store: pileup::Store&, reader: cram::Reader&, index: cram_index::Index&,
     store.begin = begin;
     store.end = end;
     var status = cursor.fetch(index, reader, tid, begin, end);
-    while status == bam::Status.Record {
+    while status == bam::Status.Ok {
         status = cursor.read(reader, source);
         if status != bam::Status.Record {
             break;
         }
+        status = bam::Status.Ok;
         let record = reader.record();
         if record.fields.flags & 4 == 0 {
             status = pileup::retain(store, record);
@@ -136,5 +140,5 @@ fn load(store: pileup::Store&, reader: cram::Reader&, index: cram_index::Index&,
     if store.auto_link_mates {
         store.link_mates();
     }
-    bam::Status.Record
+    bam::Status.Ok
 }

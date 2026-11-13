@@ -3,7 +3,7 @@ namespace only_depth;
 import std;
 import dictionary;
 import alignment;
-import seqair from "github.com/sstadick/goose-seqair@v0.3.1";
+import seqair from "github.com/sstadick/goose-seqair@v0.4.0";
 import seqair.bam;
 import bitvec from "github.com/sstadick/goose-bitvec@v0.1.0";
 import opts from "github.com/sstadick/goose-opts@v0.1.0";
@@ -129,7 +129,7 @@ fn load<R, I, C>(counter: Counter&, changed: bitvec::BitVec&, reader: R&, index:
     counter.groups.clear();
     counter.ids.clear();
     let query = alignment::fetch(reader, index, cursor, tid, start, stop);
-    if query != bam::Status.Record {
+    if query != bam::Status.Ok {
         return query;
     }
     loop {
@@ -180,7 +180,7 @@ fn load<R, I, C>(counter: Counter&, changed: bitvec::BitVec&, reader: R&, index:
         }
         counter.add(changed, current.begin, current.end, current.no_stop);
     }
-    bam::Status.Record
+    bam::Status.Ok
 }
 
 fn row(text: u8[>..]&, name: const u8[:], begin: i64, end: i64, depth: i64, bed: bool) {

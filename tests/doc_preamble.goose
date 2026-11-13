@@ -1,6 +1,6 @@
 import std;
 import perbase from "..";
-import seqair from "github.com/sstadick/goose-seqair@v0.2.2";
+import seqair from "github.com/sstadick/goose-seqair@v0.3.1";
 import seqair.bam;
 import seqair.pileup;
 import bgzf from "github.com/sstadick/goose-bgzf@v0.1.2";

@@ -1,5 +1,25 @@
 # Perbase benchmarks
 
+## Quick preliminary comparisons
+
+`bench/run.py` defaults to one warmup and seven measured runs per executable.
+Use `--rounds 1 --warmups 0` for one measured run each, still validating every
+output against the other implementation by SHA-256:
+
+```sh
+python3 bench/run.py reads.bam --perbase /path/to/rust/perbase \
+  --threads 32 --rounds 1 --warmups 0 --output quick.json
+```
+
+Compared with our previous full-dataset runs (one warmup plus three measured runs),
+this reduces program executions and output validations by 75%. Input hashing
+and setup still take time. The JSON records both counts. Label these results
+as single-run measurements: skipping warmups can introduce cache/order effects,
+and one sample cannot establish variability. Repeat close or surprising results
+with warmups and multiple measured runs before drawing conclusions. Changing
+the repetition count does not change the input, workload options, or output
+validation; use the same workload matrix, including `only-depth`.
+
 ## Official v0.1.0 whole-genome rerun: blocked by the region payload limit
 
 The paper's full HG00157 BAM (36,861,040,449 bytes), rather than a chr20 subset,

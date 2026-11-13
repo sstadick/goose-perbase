@@ -2,7 +2,7 @@
 namespace alignment;
 import std;
 import os;
-import seqair from "github.com/sstadick/goose-seqair@v0.2.2";
+import seqair from "github.com/sstadick/goose-seqair@v0.3.1";
 import seqair.bam;
 import seqair.bam_index;
 import seqair.pileup;
@@ -114,14 +114,27 @@ fn read(reader: cram::Reader&, cursor: cram_index::Cursor&, source: Reference&) 
 
 fn load(store: pileup::Store&, reader: cram::Reader&, index: cram_index::Index&, cursor: cram_index::Cursor&,
         source: Reference&, tid: i32, begin: i64, end: i64) -> bam::Status {
-    store.clear(); store.tid = tid; store.begin = begin; store.end = end;
+    store.clear();
+    store.tid = tid;
+    store.begin = begin;
+    store.end = end;
     var status = cursor.fetch(index, reader, tid, begin, end);
     while status == bam::Status.Record {
         status = cursor.read(reader, source);
-        if status != bam::Status.Record { break; }
+        if status != bam::Status.Record {
+            break;
+        }
         let record = reader.record();
-        if record.fields.flags & 4 == 0 { status = pileup::retain(store, record); }
+        if record.fields.flags & 4 == 0 {
+            status = pileup::retain(store, record);
+        }
     }
-    if status != bam::Status.End { store.clear(); return status; }
-    store.link_mates(); bam::Status.Record
+    if status != bam::Status.End {
+        store.clear();
+        return status;
+    }
+    if store.auto_link_mates {
+        store.link_mates();
+    }
+    bam::Status.Record
 }

@@ -1,0 +1,2 @@
+// Native mailbox implementation used by result_stream.goose.
+c_sources = ["src/result_stream.c"];

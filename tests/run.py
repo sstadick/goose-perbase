@@ -2,11 +2,14 @@
 import argparse
 import csv
 import gzip
+import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import random
 import subprocess
+import sys
 import tempfile
 
 import pysam
@@ -206,6 +209,86 @@ def cram_tests(args, directory):
     run(args.goose, "base-depth", bam, ["-r", packed_reference], ok=False)
 
 
+def streaming_tests(args, directory):
+    # Many pieces per region, uneven work, empty jobs, and mailbox reuse.
+    # Comparing whole bytes catches dropped/reordered pieces and extra headers.
+    path = directory / "streaming.bam"
+    header = {"HD": {"SO": "coordinate"}, "SQ": [
+        {"SN": 'chr"slow', "LN": 24017},
+        {"SN": "empty", "LN": 8001},
+        {"SN": "last", "LN": 13007},
+    ]}
+    with pysam.AlignmentFile(path, "wb", header=header) as output:
+        for i in range(301):
+            read = pysam.AlignedSegment()
+            read.query_name = f"stream-{i}"
+            read.reference_id = 0 if i < 300 else 2
+            read.reference_start = 0 if i < 300 else 12003
+            read.mapping_quality = 60
+            length = 4001 if i < 300 else 7
+            read.cigartuples = [(0, length)]
+            read.query_sequence = "A" * length
+            read.query_qualities = [30] * length
+            read.set_tag("ZZ", "unused auxiliary data")
+            output.write(read)
+    pysam.index(str(path))
+
+    def run(exe, command, flags, threads, extra=(), ok=True):
+        result = subprocess.run(
+            [str(exe.resolve()), command, str(path), "-t", str(threads), "-c", "4003", *flags, *extra],
+            capture_output=True, timeout=60, env=dict(os.environ, RUST_LOG="error"))
+        assert (result.returncode == 0) == ok, result.stderr.decode()
+        return result.stdout
+
+    for command, flags in [("base-depth", ["-k"]), ("base-depth", []),
+                           ("only-depth", ["-n", "-k"]), ("only-depth", [])]:
+        for threads in (1, 6):
+            expected = run(args.perbase, command, flags, threads)
+            assert run(args.goose, command, flags, threads) == expected
+            compressed = run(args.goose, command, flags, threads, ["-Z", "-T", "2"])
+            assert gzip.decompress(compressed) == expected
+            # With one worker, 80,000 bytes forces wrapping inside a message,
+            # rather than only at a multiple of the 65,536-byte transfer size.
+            assert run(args.goose, command, flags, threads, ["-C", "0.00008"]) == expected
+        # A tiny concurrency budget must still drain the stream and terminate.
+        assert run(args.goose, command, flags, 6, ["-C", "0.000001"]) == expected
+        if Path("/dev/full").exists():
+            # Fail while producers can be blocked on full mailboxes, not only
+            # during the final close after all workers have already joined.
+            run(args.goose, command, flags, 6, ["-o", "/dev/full"], ok=False)
+
+    # One row larger than a message must be split without corrupting TSV quoting.
+    path = directory / "wide-row.bam"
+    with pysam.AlignmentFile(path, "wb", header={"SQ": [{"SN": 'x"' * 35000, "LN": 2}]}):
+        pass
+    pysam.index(str(path))
+    for command in ("base-depth", "only-depth"):
+        expected = run(args.perbase, command, ["-k"], 1)
+        assert len(expected) > 65536
+        assert run(args.goose, command, ["-k"], 6) == expected
+    print("PASS ordered multi-piece output, empty regions, slot reuse and BGZF", flush=True)
+
+
+def benchmark_tests(args, directory):
+    bam = directory / "benchmark.bam"
+    header, records = fixture(bam)
+    expected_sha = hashlib.sha256(expected(header, records)).hexdigest()
+    for warmups in (0, 2):
+        report = directory / f"benchmark-{warmups}.json"
+        subprocess.run([
+            sys.executable, str(ROOT / "bench/run.py"), str(bam),
+            "--perbase", str(args.perbase), "--goose", str(args.goose),
+            "--rounds", "1", "--warmups", str(warmups), "--output", str(report),
+        ], check=True, capture_output=True, timeout=60)
+        data = json.loads(report.read_text())
+        assert data["rounds"] == 1 and data["warmups"] == warmups
+        assert data["output_sha256"] == expected_sha
+        for result in data["results"].values():
+            assert len(result["samples_seconds"]) == 1
+            assert result["median_seconds"] == result["samples_seconds"][0]
+    print("PASS benchmark sampling with zero and multiple warmups", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--perbase", type=Path, required=True)
@@ -216,6 +299,8 @@ def main():
         directory = Path(t); bam = directory / "input.bam"
         merge_tests(args, directory)
         cram_tests(args, directory)
+        streaming_tests(args, directory)
+        benchmark_tests(args, directory)
         def run(exe, *flags, ok=True, path=bam, threads=1, command="base-depth"):
             result = subprocess.run([str(exe.resolve()), command, str(path), "-t", str(threads), *map(str, flags)], capture_output=True, env=env, timeout=60)
             assert (result.returncode == 0) == ok, (exe, flags, result.stderr.decode())
@@ -270,13 +355,14 @@ def main():
         read.mapping_quality = 60; read.cigartuples = [(0, 1)]
         read.query_sequence = "A"; read.query_qualities = [30]; read.set_tag("ZZ", "x" * 32)
         save([read], header)
-        # 7 name + 1 base + 1 quality + 4 CIGAR + (3 tag/type + 32 string + NUL).
+        # 7 name + 1 base + 1 quality + 4 CIGAR = 13 retained bytes.
+        # The 36 auxiliary bytes are validated but no longer copied for counting.
         expected_payload = run(args.perbase)
         for threads in (1, 6):
-            for limit in (49, 4294967295):
+            for limit in (13, 49, 4294967295):
                 assert run(args.goose, "--max-region-bytes", limit, threads=threads) == expected_payload
-            run(args.goose, "--max-region-bytes", 48, threads=threads, ok=False)
-            run(args.goose, "--max-region-bytes", 48, "-D", 0, threads=threads, ok=False)
+            run(args.goose, "--max-region-bytes", 12, threads=threads, ok=False)
+            run(args.goose, "--max-region-bytes", 12, "-D", 0, threads=threads, ok=False)
         for limit in (-1, 0, 4294967296):
             run(args.goose, "--max-region-bytes", limit, ok=False)
 

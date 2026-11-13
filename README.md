@@ -14,7 +14,7 @@ kernels supplied by its dependencies. No Rust or HTSlib runtime is needed.
 
 Requires Goose, Python 3.11+, Clang, and CMake 3.20+. Tested with Goose
 [`74c641c5`](https://github.com/aardappel/goose/commit/74c641c5ac6d762e57e3177678fe9dea414d042a)
-and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.2.2
+and Clang 18.1.3 on Linux x86-64. Runtime imports pin goose-seqair v0.3.1
 (CRAI-indexed CRAM), goose-bio v0.4.1 (plain/BGZF indexed FASTA), goose-bgzf
 v0.1.2, goose-io v0.3.0 and goose-bitvec v0.1.0. Goose downloads these dependencies automatically;
 no sibling library checkout is needed. CI checks Linux x86-64 and ARM64 against
@@ -113,7 +113,8 @@ large groups. Missing-SEQ overlapping mates are handled safely here, whereas
 some upstream strategies index absent sequence/qualities.
 
 `--max-region-bytes` limits the sum of retained names, decoded bases, qualities,
-CIGAR bytes and auxiliary tags in each worker's loaded BAM/CRAM region. It defaults
+and CIGAR bytes in each worker's loaded BAM/CRAM region. Counting does not retain
+auxiliary tags or build Seqair's unused primary-mate links. It defaults
 to 4 GiB minus one byte, the aggregate ceiling protecting `u32` slab offsets.
 Buffers grow on demand: this does not preallocate 4 GiB or cap total RAM. Metadata,
 spare capacity, decoding buffers and concurrent workers add memory beyond it.
@@ -173,11 +174,11 @@ CRAI queries retain nested overlapping slice spans and decode each selected
 slice once per fetch, in file order. Adjacent fetches reuse compressed containers
 and codec storage, but can reconstruct the same slice again across boundaries.
 
-Workers share the base-depth ordered batch scheduler and BGZF output pool.
+Workers share the base-depth ordered streaming scheduler and BGZF output pool.
 For only-depth, `-C` budgets one 64 KiB scheduling unit per concurrent job;
 the default permits all workers. A job can produce substantially more output,
-especially with `-n`, so this differs from Rust's row-channel buffering.
-Reduce `-c` to bound per-region counters and output. Restricted regions can
+especially with `-n`, but sends it in bounded pieces rather than retaining it.
+Reduce `-c` to bound per-region counters. Restricted regions can
 span a superchunk (`chunksize × workers`).
 
 ## Merge-adjacent
@@ -205,16 +206,30 @@ by the largest record plus output buffers; BGZF output uses compression workers.
 
 Persistent Goose `thread_fn` workers each open and reuse their own BAM/CRAM reader,
 parsed index, region store, reference handle/cache, and output buffers. No file
-descriptor or borrowed view crosses a thread boundary. Jobs and results contain
-owned values copied through typed queues. Ordered, bounded batches keep output
-deterministic without Rayon or a shared reader lock. Compression uses a separate
+descriptor or borrowed view crosses a thread boundary. Jobs contain owned values
+copied through typed queues. Each outstanding job has a bounded native mailbox;
+its worker can count and format ahead until that mailbox fills. Base-depth allows
+up to one estimated region of TSV per mailbox, limited by its share of the `-C`
+budget, with a minimum of 64 KiB. Only-depth keeps a 64 KiB mailbox. The
+main thread drains mailboxes in region order. These POSIX mutex/condition-
+variable mailboxes supply region-specific waits that Goose's typed queues do
+not provide. No pointer into a Goose buffer is retained by native code.
+Compression uses a separate
 persistent worker pool and writes completed BGZF blocks in submission order.
 
-Workers serialize each region into TSV; the coordinator collects a bounded batch
-and writes it in interval order. `-C` limits concurrent jobs using an estimated
-serialized-row size, not Rust's position-struct size, and is **not a total-memory
-limit**. BAM slabs, copies in queues, reference buffers and reused capacities
-add memory. Compression queues hold at most four blocks per compression worker.
+Workers format rows into a reusable buffer, flushing after approximately 64 KiB.
+A single large row may exceed this threshold, but messages never do. The
+main thread uses one 64 KiB receiving buffer instead of collecting a whole batch
+of TSV. It submits the next job as soon as a region's output is written, without
+waiting for all jobs in a batch. A slow earliest region can still stall later
+workers; that is the tradeoff for bounded memory and deterministic output.
+
+`-C` controls concurrency and output-buffer capacity based on estimated row size;
+it is **not a total-memory limit**. Mailbox storage is allocated on first use
+and retained for subsequent jobs. Region boundaries and maximum-depth admission are unchanged.
+BAM stores, reference buffers and retained allocation capacities still add memory;
+this change does not trim allocator pages. Compression queues hold at most four
+blocks per compression worker.
 `--ref-cache-size` bounds reference windows per worker, unlike upstream's shared
 full-contig cache; the tuning knob has different memory/performance semantics.
 

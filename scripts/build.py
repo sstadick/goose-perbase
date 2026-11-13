@@ -28,10 +28,11 @@ def main():
     subprocess.run(["cmake", "--build", str(build / "codec"), "--parallel", "2", "--target", "libdeflate_static"], check=True, env=env)
     # Seqair's native sources have no public C header. Match main.goose's tag.
     home = Path(env.get("GOOSE_HOME", Path.home() / ".goose"))
-    seqair = home / "pkg/github.com/sstadick/goose-seqair/v0.2.2"
+    seqair = home / "pkg/github.com/sstadick/goose-seqair/v0.3.1"
     flags = ["-O3", "-march=native"]
     if args.check: flags += ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-fno-omit-frame-pointer"]
     command = ["clang", *flags, str(source), *[str(seqair / "src" / name) for name in ("bases.c", "cram.c", "sam.c")],
+               str(ROOT / "src/result_stream.c"),
                str(package("bgzf.h") / "src/seek.c"), str(package("goosio.h") / "src/goosio.c"),
                str(next((build / "codec").rglob("libdeflate.a"))),
                "-lm", "-pthread", "-ldl", "-o", str(build / ("goose-perbase-check" if args.check else "goose-perbase"))]

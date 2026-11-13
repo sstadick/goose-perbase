@@ -2,7 +2,7 @@
 // Each input entry describes how one read overlaps that position.
 namespace perbase;
 import std;
-import seqair from "github.com/sstadick/goose-seqair@v0.2.2";
+import seqair from "github.com/sstadick/goose-seqair@v0.3.1";
 import seqair.bam;
 import seqair.pileup;
 

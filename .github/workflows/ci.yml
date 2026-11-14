@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: aardappel/goose
-          ref: 74c641c5ac6d762e57e3177678fe9dea414d042a
+          ref: 4602c98660676b2cb94bc9b06fec8c65b37fce92
           path: .ci/goose
       - uses: actions/checkout@v4
         with:

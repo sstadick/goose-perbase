@@ -97,7 +97,7 @@ assert(row.values[0] == 0);
 
 ## `perbase::count`
 
-[source](perbase.goose#L270-L326)
+[source](perbase.goose#L324-L440)
 
 ```goose
 fn count(
@@ -127,7 +127,7 @@ assert(row.values[0] == 0 && row.values[16] == 0);
 
 ## `perbase::append_row`
 
-[source](perbase.goose#L397-L428)
+[source](perbase.goose#L511-L542)
 
 ```goose
 fn append_row(

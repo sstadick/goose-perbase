@@ -42,13 +42,17 @@ struct Group {
     name: i64,
     len:  i64,
     next: i64,
+    head: i64 = -1,
 }
 struct Block {
-    group:   i64,
     begin:   i64,
     end:     i64,
     ordinal: i64,
     no_stop: bool,
+}
+struct LinkedBlock {
+    interval: Block,
+    next: LinkedBlock&<u32>?,
 }
 
 // Coverage changes at each position, relative to the fetched region's start.
@@ -58,7 +62,8 @@ struct Block {
 // overlapping pieces of the same pair contribute only once.
 root struct Counter {
     delta:  i64[>..]             = [],
-    blocks: Block[>..]           = [],
+    blocks: LinkedBlock[>..]     = [],
+    members: Block[>..]          = [],
     names:  u8[>..]              = [],
     groups: Group[>..]           = [],
     ids:    dictionary<u64, i64> = dictionary<u64, i64> {},
@@ -80,7 +85,7 @@ fn group(counter: Counter&, name: const u8[:]) -> i64 {
         id = g.next;
     }
     id = counter.groups.len;
-    counter.groups.push(Group { name: counter.names.len, len: name.len, next: next });
+    counter.groups.push(Group { name: counter.names.len, len: name.len, next: next, .. });
     counter.names.append(name);
     counter.ids.insert(hash, id);
     id
@@ -104,12 +109,17 @@ fn add_block(counter: Counter&, changed: bitvec::BitVec&, begin: i64, end: i64, 
     if group < 0 {
         counter.add(changed, a, b, end >= stop);
     } else {
-        counter.blocks.push(Block {
-            group:   group,
-            begin:   a,
-            end:     b,
-            ordinal: counter.blocks.len,
-            no_stop: end >= stop,
+        let head = counter.groups[group].head;
+        let previous: LinkedBlock&? = if head >= 0 { counter.blocks[head] } else { null };
+        counter.groups[group].head = counter.blocks.len;
+        counter.blocks.push(LinkedBlock {
+            interval: Block {
+                begin:   a,
+                end:     b,
+                ordinal: counter.blocks.len,
+                no_stop: end >= stop,
+            },
+            next: previous,
         });
     }
 }
@@ -166,19 +176,37 @@ fn load<R, I, C>(counter: Counter&, changed: bitvec::BitVec&, reader: R&, index:
             }
         }
     }
-    sort(counter.blocks) { a, b => a.group < b.group || (a.group == b.group &&
-        (a.begin < b.begin || (a.begin == b.begin && (a.end < b.end || (a.end == b.end && a.ordinal < b.ordinal))))) };
-    var i: i64 = 0;
-    while i < counter.blocks.len {
-        var current = counter.blocks[i];
-        i += 1;
-        while i < counter.blocks.len && counter.blocks[i].group == current.group && counter.blocks[i].begin <= current.end {
-            current.end = max(current.end, counter.blocks[i].end);
-            i += 1;
-            // Perbase/rust-lapper retains the first interval's value, even when
-            // a later clipped interval extends to the region's final base.
+    // Only intervals with the same read name can merge. Keep their blocks in
+    // separate lists so unrelated names never participate in the same sort.
+    for group in counter.groups {
+        if group.head < 0 {
+            continue;
         }
-        counter.add(changed, current.begin, current.end, current.no_stop);
+        let first .= counter.blocks[group.head];
+        if !first.next {
+            counter.add(changed, first.interval.begin, first.interval.end, first.interval.no_stop);
+            continue;
+        }
+        counter.members.clear();
+        var next: LinkedBlock&? = first;
+        while next {
+            counter.members.push(next.interval);
+            next .= next.next;
+        }
+        sort(counter.members) { a, b => a.begin < b.begin || (a.begin == b.begin &&
+            (a.end < b.end || (a.end == b.end && a.ordinal < b.ordinal))) };
+        var i: i64 = 0;
+        while i < counter.members.len {
+            var current = counter.members[i];
+            i += 1;
+            while i < counter.members.len && counter.members[i].begin <= current.end {
+                current.end = max(current.end, counter.members[i].end);
+                i += 1;
+                // Perbase/rust-lapper retains the first interval's value, even
+                // when a later block extends to the region's final base.
+            }
+            counter.add(changed, current.begin, current.end, current.no_stop);
+        }
     }
     bam::Status.Ok
 }

@@ -27,13 +27,20 @@ fn flush(handle: u64, slot: i64, text: u8[>..]&, finish: bool = false) {
     if text.len < 65536 && !finish {
         return;
     }
+    // Keep a row's partial tail for the next transfer instead of taking the
+    // mailbox lock a second time to send only a few bytes.
+    let length = if finish { text.len } else { text.len / 65536 * 65536 };
     var at: i64 = 0;
-    while at < text.len {
-        let end = min(at + 65536, text.len);
+    while at < length {
+        let end = min(at + 65536, length);
         send(handle, slot, text[at..end]);
         at = end;
     }
-    text.clear();
+    let remaining = text.len - length;
+    for i in remaining {
+        text[i] = text[length + i];
+    }
+    text.resize(remaining);
     if finish {
         send(handle, slot, "");
     }

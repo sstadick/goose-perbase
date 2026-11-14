@@ -382,6 +382,36 @@ def main():
                     rust = run(args.perbase, *flags, "-c", 7, threads=6)
                     assert run(args.goose, *flags, "-c", 7, threads=6) == rust, ("mate strategy", seed, flags)
 
+        # Name-group span proofs must distinguish abutting from overlapping
+        # reads, and notice a later overlap after a disjoint prefix. Include
+        # singleton/pair/triple ties, zero-span reads, skips and deletions.
+        records = []
+        layouts = [(1,), (1, 6, 11), (1, 5), (1, 6, 10), (1, 1), (1, 1, 1)]
+        shapes = ["5M", "2M2D3M", "2M3N3M", "1S2M1I1M", "5I"]
+        for tid in (0, 1):
+            for group, starts in enumerate(layouts):
+                for shape, cigar in enumerate(shapes):
+                    for i, start in enumerate(starts):
+                        read = pysam.AlignedSegment()
+                        read.query_name = f"boundary-{group}-{shape}"
+                        read.reference_id = tid
+                        read.reference_start = start
+                        read.cigarstring = cigar
+                        read.query_sequence = "ACG"[i % 3] * 5
+                        read.query_qualities = [30] * 5
+                        read.mapping_quality = 60
+                        read.flag = [65, 129, 256][i % 3]
+                        records.append(read)
+        save(records, header)
+        for strategy in strategies:
+            for cap in (1, 7, 100000):
+                for filters in ([], ["-F", 256, "-Q", 31]):
+                    for chunk in (7, 1000000):
+                        flags = ["-m", "--mate-resolution-strategy", strategy,
+                                 "-D", cap, "-c", chunk, *filters]
+                        rust = run(args.perbase, *flags, threads=1)
+                        assert run(args.goose, *flags, threads=1) == rust, ("mate span boundary", flags)
+
         # Interval union, overlap duplication, superchunk clipping and BCF RID
         # order differing from BAM order. VCF REF/END do not expand the position.
         header, records = fixture(bam)
@@ -495,6 +525,54 @@ def main():
                 for chunk, threads in ((7, 1), (7, 6), (1000000, 1)):
                     common = [*flags, "-c", chunk]
                     assert depth(args.goose, *common, threads=threads) == depth(args.perbase, *common, threads=threads), ("only-depth", seed, common, threads)
+
+        # Separate names must never merge. Within a name, cover singleton,
+        # abutting, nested, disjoint, tied and multi-block intervals. Chunking
+        # also exercises the legacy first-interval value at clipped endpoints.
+        header = {"HD": {"SO": "coordinate"}, "SQ": [{"SN": "chrA", "LN": 96}]}
+        records = []
+        layouts = [((1, "5M"),), ((1, "5M"), (6, "5M")),
+                   ((2, "15M"), (4, "3M")), ((3, "4M"), (12, "6M")),
+                   ((5, "5M"), (5, "6M"), (5, "5M")),
+                   ((1, "2M3N4M2D3M"), (3, "3M2I4M"), (8, "5M"))]
+        for group, layout in enumerate(layouts):
+            for i, (start, cigar) in enumerate(layout):
+                record = pysam.AlignedSegment()
+                record.query_name = f"depth-group-{group}"
+                record.reference_id = 0
+                record.reference_start = start
+                record.cigarstring = cigar
+                record.query_sequence = "A" * record.infer_query_length()
+                record.flag = 65 if i % 2 == 0 else 129
+                record.mapping_quality = 10 if i == 1 else 60
+                record.next_reference_id = 0
+                record.next_reference_start = 0
+                record.template_length = 0
+                records.append(record)
+        save(records, header)
+        for filtered in (False, True):
+            covered = {}
+            for record in records:
+                if filtered and record.mapping_quality < 20:
+                    continue
+                positions = covered.setdefault(record.query_name, set())
+                pos = record.reference_start
+                for op, length in record.cigartuples:
+                    if op in (0, 2, 7, 8):
+                        positions.update(range(pos, pos + length))
+                    if op in (0, 2, 3, 7, 8):
+                        pos += length
+            oracle = ("REF\tPOS\tEND\tDEPTH\n" + "".join(
+                f"chrA\t{pos}\t{pos + 1}\t{sum(pos in group for group in covered.values())}\n"
+                for pos in range(96))).encode()
+            flags = ["-m", *(["-q", 20] if filtered else [])]
+            for exe in (args.goose, args.perbase):
+                assert depth(exe, *flags, "-n", "-k", "-z") == oracle
+            for chunk in (7, 11):
+                for threads in (1, 6):
+                    for output_flags in ([], ["-n", "-k"], ["--bed-format", "-z"]):
+                        common = [*flags, *output_flags, "-c", chunk]
+                        assert depth(args.goose, *common, threads=threads) == depth(args.perbase, *common, threads=threads), ("depth group boundaries", common, threads)
 
         # Reusing counters across long, short empty, then longer fetches must
         # clear old endpoints before shrinking and never resurrect stale depth.

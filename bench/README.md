@@ -1,5 +1,50 @@
 # Perbase benchmarks
 
+## Goose application tuning after the matched mate-group algorithm
+
+These are HG00157 chr20 measurements, not whole-genome paper results. The G2
+control already includes disjoint-name-group and singleton/pair shortcuts plus
+explicit helper inlining. G3 adds cached read filters in packed metadata,
+reusable grouping storage, check-free counter updates, per-name interval sorting
+for mate-fixed depth, four-byte relative interval links, and full-block output
+transfers. Seqair and the Rust R7 comparison executable are unchanged.
+
+Five sequential interleaved runs per variant, warm cache, regular TSV files
+without fsync, `-t 32 -c 1000000`. Every timed output matches by SHA-256; hashing
+is outside timing. No builds or tests ran concurrently. Both Goose variants
+use compiler `4602c986` and Clang 18.1.3 `-O3 -march=native`, including native
+kernels and libdeflate. The measured G3 source predates only final line wrapping.
+
+| Command | G2 median | G3 median | G3 elapsed reduction |
+| --- | ---: | ---: | ---: |
+| `base-depth -m` | 5.30 s | 5.15 s | 2.8% |
+| `base-depth` | 4.75 s | 4.72 s | 0.6%; inconclusive |
+| `only-depth` | 1.17 s | 1.04 s | 11.1% |
+| `only-depth -x` | 1.19 s | 1.03 s | 13.4% |
+| `only-depth -m` (separate cohort) | 1.20 s | 1.06 s | 11.7% |
+
+In the same full-chr20 mate-fixed base-depth cohort, Rust R7 took **5.24 s**
+(5.12–5.29), versus Goose G3 **5.15 s** (5.12–5.20). The overlapping ranges
+do not establish a stable language advantage. Median summed CPU was 62.62 s
+for Rust and 58.01 s for Goose; median peak RSS was 5.51 and 5.28 GiB.
+On a separate 1 Mb, one-worker control, Rust was 0.58 s and Goose 0.59 s.
+
+The large real-data depth improvement appeared with full-block transfers;
+do not credit it to smaller pointers. A synthetic overlap-heavy workload
+(100,000 pairs, three covered CIGAR blocks per read) isolated per-name sorting:
+0.12 → 0.06 s. Relative links kept that 0.06 s timing while reducing median
+peak RSS from 41.25 to 38.25 MiB. These are synthetic results, not paper data.
+`checkfree` verifies that the compiler can remove bounds checks from the count
+update; it does not disable safety or make the whole application check-free.
+The isolated checkfree/relative-link stage showed no real-data speedup.
+
+Raw samples, commands and executable/input/output hashes:
+[full-chr20 cohort](results/goose-tuning-full.json),
+[1 Mb and mate-fixed depth cohort](results/goose-tuning-quick.json).
+The [experiment ledger](https://gist.github.com/sstadick/e6e042cd1234b131ea260c69a025dd40)
+archives the intermediate candidates, synthetic fixture generator, build
+identities and runners. Do not combine percentage gains across cohorts.
+
 ## Quick preliminary comparisons
 
 `bench/run.py` defaults to one warmup and seven measured runs per executable.
